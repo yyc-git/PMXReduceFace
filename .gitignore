@@ -6,5 +6,8 @@ dist/
 
 screenshots/
 
-
 .opencode-brief*.md
+
+# 诊断落盘产物（diag-sock.mjs 输出；_tmp-* 防历史遗留）
+diag-sock.json
+_tmp-*
