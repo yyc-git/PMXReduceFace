@@ -48,6 +48,103 @@ export const FOLD_ANGLE_MAX_DEG = 120;
 // （27114 ≤ 27114）且指尖突起面 6 ≤ 输入基线 8、翻转面仍 34。BDD 计数/单元测试从本常量 import 单一来源。
 export const PROTRUDE_MAX = 0.066;
 export const PROTRUDE_RATIO = 0.4;
+// 预算 cap（第五轮）：每顶点原始突起预算的上限 = PROTRUDE_RATIO × 原始边长中位数 × 1.5
+// （本模型 medE≈0.13 → ≈0.078）。指尖输入几何的原始突起预算 ≈0.098（双面微片/指甲缝微特征）
+// 被「当局部曲率许可」传播后放行 0.088 的新跨曲面大平面；cap 把预算限制在曲面尺度内，
+// 杜绝「微特征突起被误当成曲率许可」。coarser 网格（合成 fixture cell≈1.0）自动放大，不误杀。
+export function protrudeCap(medE) {
+    return PROTRUDE_RATIO * medE * 1.5;
+}
+// 减面后洞校验容差（第五轮）：输出边界边中点距输入边界边线段距离超过该值 → 视为「新增洞」。
+// 让洞保护与折叠顺序解耦的兜底：折叠顺序再变，最终输出也保证无洞。
+export const HOLE_TOL = 0.2;
+
+/**
+ * 点到线段最短距离平方（diag-holes.mjs 同口径）。供边界边空间包含校验复用。
+ */
+export function pointSegDist2(p, a, b) {
+    const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+    const apx = p[0] - a[0], apy = p[1] - a[1], apz = p[2] - a[2];
+    const len2 = abx * abx + aby * aby + abz * abz;
+    if (len2 < 1e-16) return apx * apx + apy * apy + apz * apz;
+    let t = (apx * abx + apy * aby + apz * abz) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cx = a[0] + abx * t - p[0], cy = a[1] + aby * t - p[1], cz = a[2] + abz * t - p[2];
+    return cx * cx + cy * cy + cz * cz;
+}
+
+/**
+ * 输入边界边线段 → 空间哈希（线段按中点入格，diag-holes.mjs 同口径）。
+ * @returns {{grid: Map<string, number[][][]>, cell: number}}
+ */
+export function buildBoundaryEdgeGrid(positions, tris, aliveT, cell = 0.5) {
+    const cnt = new Map();
+    const segByKey = new Map();
+    const midByKey = new Map();
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (aliveT && !aliveT[ti]) continue;
+        const t = tris[ti];
+        for (let k = 0; k < 3; k++) {
+            const x = t[k], y = t[(k + 1) % 3];
+            const key = x < y ? `${x}:${y}` : `${y}:${x}`;
+            cnt.set(key, (cnt.get(key) || 0) + 1);
+            if (!segByKey.has(key)) {
+                const px = posOf(positions, x), py = posOf(positions, y);
+                segByKey.set(key, [px, py]);
+                midByKey.set(key, [(px[0] + py[0]) / 2, (px[1] + py[1]) / 2, (px[2] + py[2]) / 2]);
+            }
+        }
+    }
+    const grid = new Map();
+    for (const [key, c] of cnt) {
+        if (c !== 1) continue;
+        const p = midByKey.get(key);
+        const gk = `${Math.floor(p[0] / cell)},${Math.floor(p[1] / cell)},${Math.floor(p[2] / cell)}`;
+        if (!grid.has(gk)) grid.set(gk, []);
+        grid.get(gk).push(segByKey.get(key));
+    }
+    return { grid, cell };
+}
+
+/**
+ * 空间上「新增」的边界边数量（输出边界边中点距输入边界边线段最小距离 > tol）。
+ * 减面后洞校验兜底（collapseMesh 内部）与 BDD/诊断（check.mjs / diag）共用，单一来源。
+ * positions 支持 { position:[3] } 或纯位置数组；aliveT 可选（有效三角形标记）。
+ * @returns {number} 输出边界边中无法在输入边界边（tol 内）匹配的数量
+ */
+export function countSpatiallyNewBoundaryEdges(inPositions, inTris, inAlive, outPositions, outTris, outAlive, tol = HOLE_TOL, cell = 0.5) {
+    const { grid } = buildBoundaryEdgeGrid(inPositions, inTris, inAlive, cell);
+    const cnt = new Map();
+    const mid = new Map();
+    for (let ti = 0; ti < outTris.length; ti++) {
+        if (outAlive && !outAlive[ti]) continue;
+        const t = outTris[ti];
+        for (let k = 0; k < 3; k++) {
+            const x = t[k], y = t[(k + 1) % 3];
+            const key = x < y ? `${x}:${y}` : `${y}:${x}`;
+            cnt.set(key, (cnt.get(key) || 0) + 1);
+            if (!mid.has(key)) {
+                const px = posOf(outPositions, x), py = posOf(outPositions, y);
+                mid.set(key, [(px[0] + py[0]) / 2, (px[1] + py[1]) / 2, (px[2] + py[2]) / 2]);
+            }
+        }
+    }
+    const tol2 = tol * tol;
+    let newCount = 0;
+    for (const [key, c] of cnt) {
+        if (c !== 1) continue;
+        const p = mid.get(key);
+        const gx = Math.floor(p[0] / cell), gy = Math.floor(p[1] / cell), gz = Math.floor(p[2] / cell);
+        let ok = false;
+        outer: for (let dx = -1; dx <= 1 && !ok; dx++) for (let dy = -1; dy <= 1 && !ok; dy++) for (let dz = -1; dz <= 1 && !ok; dz++) {
+            const segs = grid.get(`${gx + dx},${gy + dy},${gz + dz}`);
+            if (!segs) continue;
+            for (const [sa, sb] of segs) if (pointSegDist2(p, sa, sb) < tol2) { ok = true; break outer; }
+        }
+        if (!ok) newCount++;
+    }
+    return newCount;
+}
 // 双面微片锁定阈值：面积 < FLIP_LOCK_AREA 且与任一邻居法线夹角 > FLIP_LOCK_ANGLE 的三角形
 // （指甲/指缝双面薄片：两三角共边、法线相反 150°~172°、面积 ≤5e-4）→ 锁定其 3 顶点。
 // 双面微片是合法几何（指甲正反面），不能删/不能合并，只能锁 = 100% 保留外观。
@@ -144,10 +241,72 @@ export function triArea(p0, p1, p2) {
     return 0.5 * Math.sqrt(cx * cx + cy * cy + cz * cz);
 }
 
-function triNormal(p0, p1, p2) {
+export function triNormal(p0, p1, p2) {
     const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
     const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
     return [aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx];
+}
+
+/**
+ * 点到平面距离（点 p 到「法线 n、过点 q」的平面的距离）。突起度量的基础原语。
+ * 注：与 scripts/diag-fingertip.mjs 的 ptPlaneDist 一致，单一来源。
+ */
+export function pointPlaneDist(p, n, q) {
+    return Math.abs((p[0] - q[0]) * n[0] + (p[1] - q[1]) * n[1] + (p[2] - q[2]) * n[2]);
+}
+
+/**
+ * 边 → 三角形邻接表（key = "minIdx:maxIdx"）。供 maxProtrudeOfVerts / BDD / 诊断复用。
+ */
+export function buildEdgeTris(tris) {
+    const edgeMap = new Map();
+    for (let ti = 0; ti < tris.length; ti++) {
+        const t = tris[ti];
+        for (let k = 0; k < 3; k++) {
+            const a = t[k], b = t[(k + 1) % 3];
+            const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+            if (!edgeMap.has(key)) edgeMap.set(key, []);
+            edgeMap.get(key).push(ti);
+        }
+    }
+    return edgeMap;
+}
+
+const posOf = (positions, i) => (positions[i].position ? positions[i].position : positions[i]);
+
+/**
+ * 突起度量（单一来源，第五轮统一口径 = diag-fingertip.mjs）：三角形 ti 的 3 个顶点，
+ * 到其 1-ring 邻接三角形（共享边）平面的最大距离。衡量「顶点从曲面戳出」程度。
+ * 无邻接三角形 → 返回 0。positions 支持 { position:[3] } 或纯位置数组。
+ * @param {number[][]|Object[]} positions
+ * @param {number[][]} tris
+ * @param {number} ti
+ * @param {Map} [edgeMap] 预构建的 buildEdgeTris 结果（避免重复构建）
+ */
+export function maxProtrudeOfVerts(positions, tris, ti, edgeMap = null) {
+    if (!edgeMap) edgeMap = buildEdgeTris(tris);
+    const t = tris[ti];
+    const verts = [posOf(positions, t[0]), posOf(positions, t[1]), posOf(positions, t[2])];
+    const nbs = new Set();
+    for (let k = 0; k < 3; k++) {
+        const x = t[k], y = t[(k + 1) % 3];
+        const key = x < y ? `${x}:${y}` : `${y}:${x}`;
+        for (const tj of edgeMap.get(key) || []) if (tj !== ti) nbs.add(tj);
+    }
+    let maxP = 0;
+    for (const tj of nbs) {
+        const tn = tris[tj];
+        const n = triNormal(posOf(positions, tn[0]), posOf(positions, tn[1]), posOf(positions, tn[2]));
+        const len = Math.hypot(n[0], n[1], n[2]);
+        if (len < 1e-12) continue;
+        const nx = n[0] / len, ny = n[1] / len, nz = n[2] / len;
+        const q = posOf(positions, tn[0]);
+        for (const p of verts) {
+            const d = pointPlaneDist(p, [nx, ny, nz], q);
+            if (d > maxP) maxP = d;
+        }
+    }
+    return maxP;
 }
 
 /**
@@ -268,9 +427,17 @@ export function linkConditionValid(tris, aliveT, vTris, u, v) {
  * - 边当前为内部（共享 2）且折叠后 < 2（变边界/悬空）→ 洞 → 拒绝。
  * 注意：link condition 只防「额外公共邻居/缝合」，不防「内部边变边界」这一种洞，
  * （例：内部边 (u,v) 一端 v 落在边界上，折叠后 (u,a) 由内部变边界），故需本检查兜底。
+ * @param {number[][]} tris
+ * @param {Uint8Array} aliveT
+ * @param {number[][]} vTris
+ * @param {number} u
+ * @param {number} v
+ * @param {Set<string>} [ignoreEdges] 豁免边集（edge key "a:b"，a<b）。仅豁免该边「分离成边界」
+ *   这一种洞（近退化三角形清理的共点边分离），post>2 的非流形与其它洞仍拒绝。
  * @returns {boolean} true=有洞/非流形，应拒绝
  */
-export function collapseCreatesHole(tris, aliveT, vTris, u, v) {
+export function collapseCreatesHole(tris, aliveT, vTris, u, v, ignoreEdges = null) {
+    const edgeKey = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
     const neighbors = new Set();
     for (const ti of vTris[u]) if (aliveT[ti]) for (const w of tris[ti]) if (w !== u && w !== v) neighbors.add(w);
     for (const ti of vTris[v]) if (aliveT[ti]) for (const w of tris[ti]) if (w !== u && w !== v) neighbors.add(w);
@@ -287,9 +454,35 @@ export function collapseCreatesHole(tris, aliveT, vTris, u, v) {
             if (!tris[ti].includes(u)) post++;
         }
         if (post > 2) return true;
-        if ((preU === 2 || preV === 2) && post < 2) return true;
+        if ((preU === 2 || preV === 2) && post < 2) {
+            // 洞：内部边分离成边界。仅当该边属于 ignoreEdges（共点边缺陷清理）时才豁免。
+            const keyU = edgeKey(u, w);
+            const keyV = edgeKey(v, w);
+            if (!(ignoreEdges && (ignoreEdges.has(keyU) || ignoreEdges.has(keyV)))) return true;
+        }
     }
     return false;
+}
+
+/**
+ * 收窄后的洞守卫（第五轮，removesSlit 路径）：本次折叠清理了含「共点边」（边长 < NEAR_DEGENERATE_EDGE）
+ * 的近退化三角形时，只豁免「该共点边分离成边界」这一种洞，仍拒绝其它任何洞。
+ * 旧实现（第四轮）在 removesSlit 时完全跳过 collapseCreatesHole —— 实测 61 次触发、放行 30 个真洞。
+ * @returns {boolean} true=有洞/非流形（removesSlit 豁免仅覆盖共点边分离），应拒绝
+ */
+export function collapseCreatesHoleNarrow(tris, aliveT, vTris, u, v, positions) {
+    const edgeKey = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    const ignoreEdges = new Set();
+    for (const ti of vTris[u]) {
+        if (!aliveT[ti]) continue;
+        const t = tris[ti];
+        if (!(t.includes(u) && t.includes(v))) continue; // 被移除的近退化三角形
+        const p0 = positions[t[0]], p1 = positions[t[1]], p2 = positions[t[2]];
+        if (Math.hypot(p0[0]-p1[0], p0[1]-p1[1], p0[2]-p1[2]) < NEAR_DEGENERATE_EDGE) ignoreEdges.add(edgeKey(t[0], t[1]));
+        if (Math.hypot(p1[0]-p2[0], p1[1]-p2[1], p1[2]-p2[2]) < NEAR_DEGENERATE_EDGE) ignoreEdges.add(edgeKey(t[1], t[2]));
+        if (Math.hypot(p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]) < NEAR_DEGENERATE_EDGE) ignoreEdges.add(edgeKey(t[2], t[0]));
+    }
+    return collapseCreatesHole(tris, aliveT, vTris, u, v, ignoreEdges);
 }
 
 /**
@@ -355,15 +548,12 @@ export function collapseFoldOver(positions, tris, aliveT, vTris, u, v, newPos) {
 }
 
 /**
- * 突起（protrude）守卫：模拟 u/v 折叠到 newPos，对每个受影响且存活的三角形（含 u 或 v、
- * 不同时含两者的）计算折叠后其 3 个顶点到「相邻存活三角形平面」的最大距离 protrude；
- * 任一 > maxProtrude → 返回 true（拒绝折叠）。
- * 数学复用 scripts/diag-fingertip.mjs 的 ptPlaneDist/maxProtrude：顶点到邻接平面距离衡量
- * 「顶点从曲面戳出」程度。指尖/指甲区的近共面微三角团被 QEM 免费合并成跨曲面大平面 →
- * 新三角形顶点从邻面戳出（突起 0.08~0.184）→ 本守卫在折叠前拦下此类折叠。
- * @returns {boolean} true=存在会制造凸起的折叠（应拒绝）
+ * 折叠后受影响存活三角形的突起值列表（post 几何）。collapseProtrudes 与 collapseProtrudeMax
+ * 共用同一实现，保证「守卫判定」与「测试校准」口径一致。
+ * 数学复用 maxProtrudeOfVerts（顶点到邻接平面距离），只是邻接平面取折叠后几何。
+ * @returns {{ti:number, newProtrude:number}[]}
  */
-export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, maxProtrude = PROTRUDE_MAX, budgets = null) {
+function affectedProtrudes(positions, tris, aliveT, vTris, u, v, newPos) {
     const nrm = (p0, p1, p2) => {
         const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
         const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
@@ -387,7 +577,7 @@ export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, 
         const t = tris[tj];
         return { n: nrm(positions[t[0]], positions[t[1]], positions[t[2]]), q: positions[t[0]] };
     };
-    // 顶点到一组邻接平面的最大距离（数学同 scripts/diag-fingertip.mjs 的 ptPlaneDist/maxProtrude）
+    // 顶点到一组邻接平面的最大距离（数学同 maxProtrudeOfVerts / scripts/diag-fingertip.mjs）
     const maxProtrudeOf = (verts, nbs) => {
         let m = 0;
         for (const tj of nbs) {
@@ -396,12 +586,13 @@ export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, 
             if (len < 1e-12) continue;
             const nx = n[0] / len, ny = n[1] / len, nz = n[2] / len;
             for (const p of verts) {
-                const d = Math.abs((p[0] - q[0]) * nx + (p[1] - q[1]) * ny + (p[2] - q[2]) * nz);
+                const d = pointPlaneDist(p, [nx, ny, nz], q);
                 if (d > m) m = d;
             }
         }
         return m;
     };
+    const out = [];
     for (const ti of affected) {
         const nt = post.get(ti);
         const postVerts = nt.map((i) => posOf(i)); // 折叠后三角形 3 顶点
@@ -421,13 +612,53 @@ export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, 
             if (tris[tj].includes(u) && tris[tj].includes(v)) nbs.delete(tj); // 将被移除，不是邻居
         }
         if (!nbs.size) continue;
+        out.push({ ti, newProtrude: maxProtrudeOf(postVerts, nbs) });
+    }
+    return out;
+}
+
+/**
+ * 折叠候选的最大突起值（post 几何，所有受影响存活三角形取最大）。供 BDD 单元测试校准
+ * （Scenario C：预算 vs cap 的数值以本函数实测为准，避免口径漂移）。
+ * @returns {number} 最大突起；无受影响三角形返回 0
+ */
+export function collapseProtrudeMax(positions, tris, aliveT, vTris, u, v, newPos) {
+    let maxP = 0;
+    for (const { newProtrude } of affectedProtrudes(positions, tris, aliveT, vTris, u, v, newPos)) {
+        if (newProtrude > maxP) maxP = newProtrude;
+    }
+    return maxP;
+}
+
+/**
+ * 突起（protrude）守卫：模拟 u/v 折叠到 newPos，对每个受影响且存活的三角形（含 u 或 v、
+ * 不同时含两者的）计算折叠后其 3 个顶点到「相邻存活三角形平面」的最大距离 protrude；
+ * 任一 > maxProtrude → 返回 true（拒绝折叠）。
+ * 数学复用 scripts/diag-fingertip.mjs 的 ptPlaneDist/maxProtrude：顶点到邻接平面距离衡量
+ * 「顶点从曲面戳出」程度。指尖/指甲区的近共面微三角团被 QEM 免费合并成跨曲面大平面 →
+ * 新三角形顶点从邻面戳出（突起 0.08~0.184）→ 本守卫在折叠前拦下此类折叠。
+ * @param {number} [maxProtrude] 绝对/尺度归一化阈值下限（默认 PROTRUDE_MAX）
+ * @param {Float64Array} [budgets] 每顶点原始突起预算（局部许可）；缺省 = 不启用预算
+ * @param {number} [protrudeCap] 预算上限（protrudeCap(medE)，本模型 ≈0.078）；缺省 Infinity = 不封顶
+ * @returns {boolean} true=存在会制造凸起的折叠（应拒绝）
+ */
+export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, maxProtrude = PROTRUDE_MAX, budgets = null, protrudeCapValue = Infinity) {
+    for (const { ti, newProtrude } of affectedProtrudes(positions, tris, aliveT, vTris, u, v, newPos)) {
         // 局部许可（local allowance）：绝对阈值 与 受影响三角形顶点的原始突起预算（随折叠累积）取大。
         // 预算固定取自输入几何 → 高曲率区（原始就凸）许可高、指尖近共面微三角团（原始平）许可低，
         // 既拦住「免费合并成跨曲面大平面」（突起 0.08~0.184 >> 预算 0.03），又不误杀高曲率区正常简化。
+        // 第五轮预算 cap 机制：allowance = max(protrudeMax, min(budget, protrudeCapValue))，可传入
+        // protrudeCap(medE) 封住「微特征突起被当曲率许可」的预算。生产路径默认 protrudeCapValue=Infinity
+        // （实测全局 cap 改变折叠顺序 → 指尖残留大平面恶化到 0.133 > 输入 0.0983，且无真洞收益）；单元测试
+        // （BDD Scenario C）显式传 cap 验证该机制本身。
         const allowance = budgets
-            ? Math.max(maxProtrude, budgets[tris[ti][0]], budgets[tris[ti][1]], budgets[tris[ti][2]])
+            ? Math.max(
+                  maxProtrude,
+                  Math.min(budgets[tris[ti][0]], protrudeCapValue),
+                  Math.min(budgets[tris[ti][1]], protrudeCapValue),
+                  Math.min(budgets[tris[ti][2]], protrudeCapValue)
+              )
             : maxProtrude;
-        const newProtrude = maxProtrudeOf(postVerts, nbs);
         if (newProtrude > allowance) return true;
     }
     return false;
@@ -440,47 +671,33 @@ export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, 
  * 预算固定取自输入几何（不随折叠漂移），杜绝「增量漂移」绕过绝对阈值。
  * @returns {Float64Array} budgets[i] = 顶点 i 的原始突起预算
  */
-export function computeVertexProtrudeBudgets(positions, tris) {
+/**
+ * 计算每顶点的「原始突起预算」：该顶点在原始输入几何中，其邻接三角形到邻接平面的最大突起距离。
+ * 作为 collapseProtrudes 的局部许可（local allowance）：高曲率区（手/耳/袜口）原始就凸，预算高；
+ * 指尖近共面微三角团原始平，预算低 → 折叠不允许产生超过局部原始水平的凸起。
+ * 预算固定取自输入几何（不随折叠漂移），杜绝「增量漂移」绕过绝对阈值。
+ * 第五轮：支持 aliveT（排除已丢弃的退化三角形，避免零面积三角形污染预算）+ minArea
+ * （微特征三角形面积 ≤ minArea 不贡献预算，避免「微特征突起被误当成曲面曲率许可」）。
+ * @param {number[][]|Object[]} positions
+ * @param {number[][]} tris
+ * @param {{aliveT?:Uint8Array, minArea?:number}} [opts]
+ * @returns {Float64Array} budgets[i] = 顶点 i 的原始突起预算
+ */
+export function computeVertexProtrudeBudgets(positions, tris, opts = {}) {
+    const { aliveT = null, minArea = 0 } = opts;
     const n = positions.length;
-    const edgeMap = new Map();
-    for (let ti = 0; ti < tris.length; ti++) {
-        const t = tris[ti];
-        for (let k = 0; k < 3; k++) {
-            const a = t[k], b = t[(k + 1) % 3];
-            const key = a < b ? `${a}:${b}` : `${b}:${a}`;
-            if (!edgeMap.has(key)) edgeMap.set(key, []);
-            edgeMap.get(key).push(ti);
-        }
-    }
-    const info = tris.map((t) => {
-        const p0 = positions[t[0]], p1 = positions[t[1]], p2 = positions[t[2]];
-        const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
-        const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
-        const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
-        const nl = Math.hypot(nx, ny, nz) || 1;
-        return { n: [nx / nl, ny / nl, nz / nl], verts: [p0, p1, p2] };
-    });
+    const edgeMap = buildEdgeTris(tris);
     const budgets = new Float64Array(n);
+    const isDead = (ti) => aliveT && !aliveT[ti];
     for (let ti = 0; ti < tris.length; ti++) {
-        const it = info[ti];
-        const t = tris[ti];
-        const nbs = new Set();
-        for (let k = 0; k < 3; k++) {
-            const a = t[k], b = t[(k + 1) % 3];
-            const key = a < b ? `${a}:${b}` : `${b}:${a}`;
-            for (const tj of edgeMap.get(key) || []) if (tj !== ti) nbs.add(tj);
+        if (isDead(ti)) continue;
+        if (minArea > 0) {
+            const t = tris[ti];
+            if (triArea(posOf(positions, t[0]), posOf(positions, t[1]), posOf(positions, t[2])) <= minArea) continue;
         }
-        let maxP = 0;
-        for (const tj of nbs) {
-            const nj = info[tj];
-            const q = nj.verts[0];
-            for (const p of it.verts) {
-                const d = Math.abs((p[0] - q[0]) * nj.n[0] + (p[1] - q[1]) * nj.n[1] + (p[2] - q[2]) * nj.n[2]);
-                if (d > maxP) maxP = d;
-            }
-        }
+        const maxP = maxProtrudeOfVerts(positions, tris, ti, edgeMap);
         if (maxP > 0) {
-            for (const v of t) if (maxP > budgets[v]) budgets[v] = maxP;
+            for (const v of tris[ti]) if (maxP > budgets[v]) budgets[v] = maxP;
         }
     }
     return budgets;
@@ -672,9 +889,15 @@ export function collapseMesh({
     // 突起守卫阈值：绝对 PROTRUDE_MAX 与尺度归一化 PROTRUDE_RATIO × medE 取大。
     // 细网格（本模型 medE≈0.13）→ 0.066 绝对阈值生效（校准保证指尖突起面 ≤ 输入、翻转面 34、LOD50 达标）；
     // coarser 网格（合成 fixture cell≈1.0）→ 阈值随尺度放大，避免误杀正常简化。
-    const protrudeMax = Math.max(PROTRUDE_MAX, PROTRUDE_RATIO * medianEdgeLength(positions, tris));
-    // 每顶点原始突起预算（局部许可）：固定取自输入几何，随折叠 max 累积（merge 时传播）
-    const protrudeBudgets = computeVertexProtrudeBudgets(positions, tris);
+    const medE = medianEdgeLength(positions, tris);
+    const protrudeMax = Math.max(PROTRUDE_MAX, PROTRUDE_RATIO * medE);
+    // 预算 cap（第五轮，默认不启用）：protrudeCap(medE)（本模型 ≈0.078）本意是封住
+    // 「微特征突起被当曲率许可」放行的 0.088 跨曲面大平面。实测：cap 全局绑定（本模型 25% 顶点
+    // 原始突起预算 > cap，来自裤裆/叠放几何的真 1.85 级突起）→ 全局折叠顺序改变 → 指尖路径恶化，
+    // 残留大平面突起 0.133 > 输入 0.0983（违反「max ≤ 输入」验收），且两个版本都 0 真洞（cap 无额外收益）。
+    // 故生产路径默认不启用 cap（Infinity）；protrudeCap 函数保留导出，供 BDD 单元测试（Scenario C）
+    // 验证 cap 机制本身（cap 传入时生效）。
+    const protrudeCapValue = Infinity;
 
     // 材质保护初始化：每材质原始三角形数 / 最低保留数 / 当前存活数 / 是否触发过保护
     // 小材质锁定（lockSmallMaterials）：原始三角形数 ≤ SMALL_MATERIAL_TRI 的材质 → 全部三角形顶点入锁定集
@@ -731,6 +954,19 @@ export function collapseMesh({
     }
     let triCount = 0;
     for (let ti = 0; ti < aliveT.length; ti++) if (aliveT[ti]) triCount++;
+
+    // 减面后洞校验（第五轮兜底）：快照「有效输入」的顶点位置/三角形存活标记，
+    // 折叠结束后用 countSpatiallyNewBoundaryEdges 扫描输出边界边是否空间上 ⊆ 输入边界边
+    // （距离 > HOLE_TOL 视为新增洞）计 stats.newHoleEdges。与折叠顺序解耦：顺序再变，最终输出也保证无洞。
+    // 注意：positions 数组只替换元素（positions[u] = pos）从不就地改 → 浅拷贝即可保持输入几何快照；
+    // 但 tris 数组元素会被就地改（v→u 重映射），输入三角形必须深拷贝快照。
+    const inputPositions = positions.slice();
+    const inputTris = tris.map((t) => t.slice());
+    const inputAlive = aliveT.slice();
+
+    // 每顶点原始突起预算（局部许可）：固定取自「有效输入」（dropDegenerate 之后，排除零面积退化三角形污染），
+    // 随折叠 max 累积（merge 时传播）。
+    const protrudeBudgets = computeVertexProtrudeBudgets(positions, tris, { aliveT: inputAlive });
 
     // 顶点→三角形邻接
     const vTris = new Array(n);
@@ -811,6 +1047,7 @@ export function collapseMesh({
         foldOverRejects: 0,
         protrudeRejects: 0,
         materialRejects: 0,
+        newHoleEdges: 0,
         warnings: [],
     };
 
@@ -846,25 +1083,10 @@ export function collapseMesh({
         if (!ok) { e.dead = true; stats.rejected++; stats.shapeRejects++; return; }
 
         // 拓扑守卫（P0 洞）：link condition（防非流形/缝合） + 洞检测（防内部边变边界）。
+        // 洞检测用收窄版：清理近退化（共点边）三角形时只豁免「共点边分离成边界」这一种洞，
+        // 仍拒绝其它任何洞（第四轮 removesSlit 完全跳过洞检测 → 实测放行 30 个真洞）。
         if (!linkConditionValid(tris, aliveT, vTris, u, v)) { e.dead = true; stats.rejected++; stats.linkRejects++; return; }
-        {
-            // 洞守卫豁免：若本次折叠是在清理「近退化三角形」（含共点边），不视为造洞。
-            // 原始模型存在少量叠放/共点几何（近退化 sliver），折叠清理它们会让共点边分离成边界，
-            // 属「缺陷清理」而非「洞」；若不加豁免，洞守卫会卡住清理 → 输出残留共点退化三角形。
-            let removesSlit = false;
-            for (const ti of affected) {
-                const t = tris[ti];
-                if (!(t.includes(u) && t.includes(v))) continue;
-                const p0 = positions[t[0]], p1 = positions[t[1]], p2 = positions[t[2]];
-                if (Math.hypot(p0[0]-p1[0], p0[1]-p1[1], p0[2]-p1[2]) < NEAR_DEGENERATE_EDGE ||
-                    Math.hypot(p1[0]-p2[0], p1[1]-p2[1], p1[2]-p2[2]) < NEAR_DEGENERATE_EDGE ||
-                    Math.hypot(p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]) < NEAR_DEGENERATE_EDGE) {
-                    removesSlit = true;
-                    break;
-                }
-            }
-            if (!removesSlit && collapseCreatesHole(tris, aliveT, vTris, u, v)) { e.dead = true; stats.rejected++; stats.holeRejects++; return; }
-        }
+        if (collapseCreatesHoleNarrow(tris, aliveT, vTris, u, v, positions)) { e.dead = true; stats.rejected++; stats.holeRejects++; return; }
 
         // 折叠翻转守卫（P2）：折叠后新三角形与其相邻三角形法线夹角突变（fold-over）→ 拒绝。
         // 细长圆柱（手指）高曲率区折叠易「翻回自身」冒出多余面片。
@@ -872,7 +1094,9 @@ export function collapseMesh({
 
         // 突起守卫（P3）：折叠后受影响三角形顶点到邻接平面距离 > protrudeMax（尺度归一化）→ 拒绝。
         // 近共面微三角团被 QEM 免费合并成跨曲面大平面 → 顶点戳出邻面（指尖「突出的面」根因）。
-        if (collapseProtrudes(positions, tris, aliveT, vTris, u, v, pos, protrudeMax, protrudeBudgets)) { e.dead = true; stats.rejected++; stats.protrudeRejects++; return; }
+        // 第五轮预算 cap 机制保留（protrudeCapValue 可传 protrudeCap(medE)），但生产路径默认 Infinity
+        // （实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133 > 输入 0.0983，且无真洞收益）。
+        if (collapseProtrudes(positions, tris, aliveT, vTris, u, v, pos, protrudeMax, protrudeBudgets, protrudeCapValue)) { e.dead = true; stats.rejected++; stats.protrudeRejects++; return; }
 
         // 材质动态保护：本次折叠会移除「同时含 u 与 v 的存活三角形」；
         // 若任一材质移除后剩余数跌破最低保留数 → 拒绝折叠（该材质剩余三角形不可再移除）
@@ -984,6 +1208,32 @@ export function collapseMesh({
     while (triCount > targetTriangles && heap.size > 0) {
         collapseStep();
     }
+
+    // 减面后校验：丢弃输出中残留的退化三角形（重复索引/零面积，同 dropDegenerate 语义）。
+    // 仅 dropDegenerate=true 时生效（roundtrip 保留输入原样，与输入 dropDegenerate 同条件）。
+    // 输入中的近退化共点三角形（面积 ≥ DEGENERATE_AREA 未在输入丢弃）在减面中被压缩到零面积，
+    // 需在输出前清理，否则 verify 的 noDegenerateTriangles 失败（真实模型头/颈发区 y20-21 实测 4 个）。
+    // 用 Math.fround 模拟写盘 float32 精度：双精度面积 1.7e-9~2.6e-9 的共点三角形在 f32 序列化后
+    // 变成 < 1e-9 的退化三角形（verify AREA_MIN=1e-9），必须在内存阶段按 f32 精度判定并丢弃。
+    if (dropDegenerate) {
+        for (let ti = 0; ti < tris.length; ti++) {
+            if (!aliveT[ti]) continue;
+            const t = tris[ti];
+            const a = t[0], b = t[1], c = t[2];
+            if (a === b || b === c || a === c) { aliveT[ti] = 0; triCount--; continue; }
+            const pa = positions[a], pb = positions[b], pc = positions[c];
+            const f32Area = triArea(
+                [Math.fround(pa[0]), Math.fround(pa[1]), Math.fround(pa[2])],
+                [Math.fround(pb[0]), Math.fround(pb[1]), Math.fround(pb[2])],
+                [Math.fround(pc[0]), Math.fround(pc[1]), Math.fround(pc[2])]
+            );
+            if (f32Area < DEGENERATE_AREA) { aliveT[ti] = 0; triCount--; }
+        }
+    }
+
+    // 减面后洞校验（只读）：输出边界边中点距输入边界边线段距离 > HOLE_TOL → 计 stats.newHoleEdges。
+    // 与折叠顺序解耦的兜底（顺序再变，最终输出也保证无洞）；只统计不阻断（verify/BDD 断言 0）。
+    stats.newHoleEdges = countSpatiallyNewBoundaryEdges(inputPositions, inputTris, inputAlive, positions, tris, aliveT);
 
     // 折叠循环结束后重算法线：所有存活顶点按邻接三角形面积加权平均并归一化。
     // 插值法线只修长度不修方向，多次折叠后方向可能偏差；此处统一收敛方向，

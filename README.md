@@ -8,9 +8,10 @@
 
 - **QEM 约束边折叠**：二次误差度量（`quadric.mjs` 纯数学零依赖）求每边折叠代价，每次折叠代价最低边
 - **细长条 sliver 防护**：折叠代价前校验形状，拒绝会产生「细且长」三角形（aspect ≥ 10 且最长边 ≥ 0.5）的折叠 —— 防止头部/手指/袜子等处冒出长条、多余三角与破面
-- **拓扑守卫（防洞）**：边折叠前用 link condition（Hoppe 1996）+ 洞检测拒绝会制造「非流形边」（共享 >2）或把内部边变边界（洞）的折叠 —— 袜子/内裤等薄壳不再露洞
+- **拓扑守卫（防洞）**：边折叠前用 link condition（Hoppe 1996）+ 洞检测拒绝会制造「非流形边」（共享 >2）或把内部边变边界（洞）的折叠 —— 袜子/内裤等薄壳不再露洞；清理近退化（共点边 <1e-4）三角形时只豁免「共点边分离成边界」，仍拒绝其它任何洞（第五轮收窄，堵住 removesSlit 盲区）
+- **减面后洞校验**：折叠完成后只读扫描输出边界边，边中点距输入边界边线段 > `HOLE_TOL`(0.2) 计为新增洞（`stats.newHoleEdges`）—— 与折叠顺序解耦的兜底，BDD 断言 0
 - **折叠翻转防护**：拒绝折叠后新三角形与相邻三角形法线夹角突变（>120°）的候选 —— 手指等细长圆柱高曲率区不再冒出多余面片
-- **突起（protrude）防护**：折叠前模拟，拒绝折叠后受影响三角形顶点戳出邻接平面（超过尺度归一化阈值）的候选 —— 指尖近共面微三角团被 QEM「免费」合并成跨曲面大平面 → 手指不再冒出突出的面（第四轮修复）
+- **突起（protrude）防护**：折叠前模拟，拒绝折叠后受影响三角形顶点戳出邻接平面（超过尺度归一化阈值）的候选 —— 指尖近共面微三角团被 QEM「免费」合并成跨曲面大平面 → 手指不再冒出突出的面。突起度量单一来源：顶点到 1-ring 邻接面最大距离（`maxProtrudeOfVerts`，与诊断/BDD 同口径）。第五轮曾给「局部突起预算」加上限（`protrudeCap(medE)`），实测全局 cap 改变折叠顺序、指尖残留大平面突起恶化到 0.133 > 输入 0.0983，故**生产路径默认不启用 cap**（仅保留为单元测试能力）
 - **双面微片锁定**：面积 < 1e-3 且与邻居法线夹角 >120° 的指甲/指缝双面薄片，顶点全锁 100% 保留 —— 杜绝折叠放大/恶化成翻转面
 - **保留 morph**：顶点位移/UV 等 morph 引用的顶点全部进入锁定集，折叠后 morph 索引自动重映射
 - **保留 UV 接缝**：空间重合顶点聚类（`findSeamClusters`），接缝两侧顶点锁定，UV 贴图不撕裂
@@ -37,7 +38,7 @@ yarn install
 ### 减面 + 验证
 
 ```bash
-yarn test:bdd       # BDD 全绿（22 场景）
+yarn test:bdd       # BDD 全绿（26 场景）
 npx tsc --noEmit    # 类型检查
 ```
 
@@ -51,7 +52,7 @@ node src/tool/pmx-face-reduce/reduce.mjs --input in.pmx --output out.pmx --targe
 node src/tool/pmx-face-reduce/reduce.mjs \
   --input in.pmx --output out.pmx \
   --target-ratio 0.5 \
-  [--target-tri 20000] \
+  [--target-tri 35000] \
   [--lock-morph true] \
   [--lock-seams true] \
   [--lock-materials "0,1"] \
@@ -86,7 +87,7 @@ npx pmx-reduce-face-verify in.pmx out.pmx --target-ratio 0.5
 
 > ⚠️ **verify 的锁定参数必须与 reduce 一致**：若 reduce 用了 `--lock-morph false` / `--lock-seams false`，verify 必须传相同参数，否则「morph/接缝顶点锁定」断言会按默认锁定集校验而误报（此时锁定顶点位置断言不适用）。
 
-> ⚠️ **`--target-tri` 与保护下限**：`--min-retention`、小材质锁定 + 细长条 sliver / 拓扑 / 翻转 / 突起守卫合计出一个「保底三角形数」，任何减面都不会低于它。若 `--target-tri` 低于保底，减面会在保底处停下 —— 工具不报错，但 `newTriangles > target` → 统计里的 `reductionMet=false`，`verify` 的 `triWithinTarget=false` 红。选目标时请让 `--target-tri ≥ 保底`（demo 模型保底约 26082 面：突起守卫为保住指尖不再冒出「突出的面」会拦下深层折叠，是第四轮修复的代价；实测 `--target-tri 20000` 达不到）。
+> ⚠️ **`--target-tri` 与保护下限**：`--min-retention`、小材质锁定 + 细长条 sliver / 拓扑 / 翻转 / 突起守卫合计出一个「保底三角形数」，任何减面都不会低于它。若 `--target-tri` 低于保底，减面会在保底处停下 —— 工具不报错，但 `newTriangles > target` → 统计里的 `reductionMet=false`，`verify` 的 `triWithinTarget=false` 红。选目标时请让 `--target-tri ≥ 保底`（demo 模型保底约 **27110** 面；`--target-ratio 0.5` 名义目标 27114 ≥ 保底 → reductionMet=true。第五轮曾试行「突起预算 cap」，实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133 > 输入 0.0983，故默认不启用，cap 仅保留为单元测试能力）。
 
 ## 🔬 核心 API
 
@@ -177,10 +178,12 @@ loadPmx（three mmdparser 解析）
 - **二次误差度量（QEM）**：每个顶点累加邻接三角形面的基础平面方程，折叠时合并两端点误差矩阵，新位置 = 使误差最小的解（`quadric.mjs` 纯线性代数，零依赖）。
 - **边折叠**：每轮从最小堆取全局代价最低的边折叠 `u → v`，被折叠三角形从邻接表移除；折叠前依次校验形状（非退化 / 法线不翻转 / 细长条 sliver）、拓扑（link condition + 洞检测）与折叠翻转（fold-over），任一失败即拒绝该候选。
 - **细长条 sliver 防护**：QEM 只优化几何误差（点到面距离），细长条面积≈0 会被误判为「无损失」——但视觉上是冒出的长条/多余三角。折叠前对每个存活受影响三角形校验 aspect（最长边/最短边）与最长边长度，若 `aspect ≥ 10 且 maxL ≥ 0.5`（「细且长」）则拒绝该折叠。阈值来自实测：第一轮 `aspect≥20 && maxL≥2` 消灭了「长条」（maxL≥2），但头部仍残留 1~2 的「短长条」；原始模型 `aspect≥10 && maxL≥1` 的三角形仅 154/54228（0.28%），收紧到 10/1.0 消灭减面引入的短长条；第三轮手部（|x|>4.5, y 9-18）原始 aspect>10 三角形为 0，但 LOD50 仍新增 8 个 aspect≈11、maxL≈0.5 的手指窄条（maxL<1.0 被放行）→ 再收紧到 10/0.5 清零手指窄条，对原始固有细片（集中袜子位/胸口）影响极小。
-- **拓扑守卫（防洞）**：link condition（Hoppe 1996）保证折叠不制造「非流形边」（共享 >2）或「缝合」（边界→内部）；洞检测兜底拒绝「内部边变边界」（洞）的折叠（如袜子/内裤薄壳露洞）。清理近退化（共点）三角形时不视为造洞（豁免），避免卡住缺陷清理。
+- **拓扑守卫（防洞）**：link condition（Hoppe 1996）保证折叠不制造「非流形边」（共享 >2）或「缝合」（边界→内部）；洞检测兜底拒绝「内部边变边界」（洞）的折叠（如袜子/内裤薄壳露洞）。第五轮把 removesSlit 豁免收窄为「只豁免共点边分离成边界」——旧实现（第四轮）在清理近退化（共点边）三角形时完全跳过洞检测，实测放行 30 个真洞（头/颈发 y20-21）。
+- **减面后洞校验（第五轮兜底）**：折叠完成后只读扫描输出边界边，用空间哈希匹配输入边界边线段（`countSpatiallyNewBoundaryEdges`），边中点距离 > `HOLE_TOL`(0.2) 计为新增洞 → `stats.newHoleEdges`。与折叠顺序解耦：顺序再变，最终输出也保证无洞。
 - **锁定集**：morph 引用顶点、UV 接缝聚类顶点、指定材质全部顶点进入锁定集 —— 锁定顶点位置永不移动，折叠时两侧等价值重新分配。
 - **min-retention**：折叠会移除某材质三角形时，若该材质剩余数将跌破 `floor(原始面数 × minRetention)` 则拒绝该折叠（该材质剩余三角形不可再移除），防止局部过度减面。
 - **小材质保护**：原始面数 ≤ 500 的材质（眼睛、睫毛等）整个加入锁定集，100% 保留。
+- **突起守卫 + 预算 cap（默认关闭）**：突起守卫拒绝「受影响三角形顶点戳出邻接平面超过尺度归一化阈值」的折叠；每顶点原始突起预算提供局部许可（高曲率区允许）。第五轮实现预算 cap 机制 `protrudeCap(medE)`（本模型 ≈0.078）：指尖输入几何原始突起预算 ≈0.098（双面微片/指甲缝微特征）被误当「曲率许可」后会放行 0.088 的新跨曲面大平面。**实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133 > 输入 0.0983（违反「max ≤ 输入」验收）且无真洞收益 → 生产路径默认 protrudeCapValue=Infinity 不启用**；cap 机制本身由 BDD 单元测试（Scenario C）覆盖。
 - **字节级重写**：`pmx-writer.mjs` 按 PMX 分段定位，只重写顶点段 / 面索引段 / 材质 faceCount，其余（morph、骨、刚体、关节、显示帧等）逐字节原样保留 → 非减面段零风险。
 
 ## 🖥️ 运行 Demo（静态 LOD 对比）
@@ -188,7 +191,7 @@ loadPmx（three mmdparser 解析）
 Demo 是浏览器里的静态减面对比页：用 three `MMDLoader` 加载原版 PMX 与预生成的 4 档 LOD，OrbitControls 旋转/缩放，HUD 实时显示当前 LOD 的顶点数 / 三角形数 / 材质数 / 减面率。
 
 ```bash
-yarn demo:prepare          # 预生成 LOD：reduce.mjs 按 ratio 1.0/0.5/0.25/0.1 产出 4 档 + stats.json
+yarn demo:prepare          # 预生成 LOD：reduce.mjs 按 ratio 1.0/0.7/0.55/0.5 产出 4 档 + stats.json
 yarn webpack:dev-server    # 启动 dev-server → http://localhost:8096（demo/assets 静态托管到 /assets）
 ```
 
@@ -197,11 +200,11 @@ yarn webpack:dev-server    # 启动 dev-server → http://localhost:8096（demo/
 | LOD | 顶点数 | 三角形数 | 减面率 |
 |-----|--------|----------|--------|
 | LOD 100%（原版） | 34,394 | 54,228 | — |
-| LOD 50% | 20,011 | 27,113 | 50.00% |
-| LOD 25% | 19,477 | 26,082 | 51.90% |
-| LOD 10% | 19,477 | 26,082 | 51.90% |
+| LOD 70% | 25,635 | 37,955 | 30.01% |
+| LOD 55% | 21,435 | 29,822 | 45.01% |
+| LOD 50% | 20,025 | 27,110 | 50.01% |
 
-> LOD 25% / 10% 三角数相同，因为已触达 **min-retention + 小材质锁定 + sliver/拓扑/翻转/突起守卫的保底下限**（HUD 会提示「已到保护下限」）—— 这正是材质保护 + 形状/拓扑/突起保护的直观演示。第四轮新增的突起守卫为保住指尖/指甲细节，深层减面会在 26082 处停下。
+> 四档均达标（reductionMet=true）：50% 档 ≈27110 已贴近 **sliver/拓扑/翻转/突起守卫的保底下限**（再往下会被质量守卫拦下）。第五轮曾试行「突起预算 cap」收紧下限，实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133（> 输入 0.0983，即「突出的面」），故默认不启用 cap；当前 50% 档指尖最大突起 0.095 ≤ 输入 0.098、6 个突起面 ≤ 输入 8。
 
 - Demo 统计源：`demo/assets/stats.json`（`yarn demo:prepare` 生成）；缺失时 HUD 回退到页面内实时解析 mesh 几何。
 - 模型 + 纹理：`demo/assets/XiaoMeiOriginFix_02_elrein.pmx` + `demo/assets/tex/`（pmx 与 tex 同目录，纹理相对路径自动解析）。
@@ -245,11 +248,11 @@ yarn test:bdd          # BDD（jest-cucumber，22 场景）：合成 fixture（�
 npx tsc --noEmit       # 类型检查（demo/main.ts / test steps 是 .ts）
 
 # 可选：真实模型集成检查（不进 test:bdd；对 demo/assets 模型跑 reduce + verify 输出 JSON 报告）
-yarn test:real         # node scripts/real-model-check.mjs（默认 --target-ratio 0.5）
-node scripts/real-model-check.mjs --input your.pmx --target-ratio 0.25 --keep
+yarn test:real         # node scripts/real-model-check.mjs（默认 --target-ratio 0.5；目标 ≥ 地板 27110 → 全绿）
+node scripts/real-model-check.mjs --input your.pmx --target-ratio 0.55 --keep
 ```
 
-BDD 覆盖：输出可重解析 / 面数减半 / morph 锁定位置不变 / 无退化 + 权重归一化 / 材质-header 一致 / 原文件字节不变 / roundtrip 零改动 / 法线单位长度 / `--target-tri` 绝对目标 / 自动材质保护（min-retention 触发）/ `--lock-materials` 材质级锁定 / dropDegenerate 丢弃零面积 + 重复索引退化三角形 / sliver 守卫（单元级 + 管状 fixture 集成级 + 细管手指 fixture 集成级）/ 拓扑守卫（link condition + 洞检测）/ fold-over 翻转守卫。
+BDD 覆盖：输出可重解析 / 面数减半 / morph 锁定位置不变 / 无退化 + 权重归一化 / 材质-header 一致 / 原文件字节不变 / roundtrip 零改动 / 法线单位长度 / `--target-tri` 绝对目标 / 自动材质保护（min-retention 触发）/ `--lock-materials` 材质级锁定 / dropDegenerate 丢弃零面积 + 重复索引退化三角形 / sliver 守卫（单元级 + 管状 fixture 集成级 + 细管手指 fixture 集成级）/ 拓扑守卫（link condition + 洞检测）/ fold-over 翻转守卫 / 突起守卫 + 预算 cap（单元级 + 指尖 fixture 集成级）/ 洞守卫收窄（removesSlit 只豁免共点边分离）/ 混合 fixture 输出边界边空间包含于输入。
 
 ## 📄 License
 
@@ -271,9 +274,10 @@ BDD 覆盖：输出可重解析 / 面数减半 / morph 锁定位置不变 / 无�
 
 - **QEM constrained edge collapse**: per-edge collapse cost from the quadric error metric (`quadric.mjs` — pure math, zero deps); each step collapses the lowest-cost edge
 - **Sliver (thin-strip) prevention**: a shape guard runs before each collapse and rejects any collapse that would create a "thin + long" triangle (aspect ≥ 10 with longest edge ≥ 0.5) — preventing long strips / stray triangles / broken surfaces on the head, fingers and socks
-- **Topology guard (hole prevention)**: a link condition (Hoppe 1996) + hole detection reject collapses that would create a non-manifold edge (shared > 2) or turn an interior edge into a boundary (a hole) — thin shells like socks/underwear no longer show holes
+- **Topology guard (hole prevention)**: a link condition (Hoppe 1996) + hole detection reject collapses that would create a non-manifold edge (shared > 2) or turn an interior edge into a boundary (a hole) — thin shells like socks/underwear no longer show holes. Round 5 narrowed the removesSlit exemption to "coincident-edge separation only" — the old implementation skipped hole detection entirely while cleaning near-degenerate (coincident-edge) triangles, letting 30 true holes through (head/neck hair y20-21).
+- **Post-reduction hole validation**: after collapsing, a read-only scan matches each output boundary edge midpoint against input boundary-edge segments (`countSpatiallyNewBoundaryEdges`); midpoints farther than `HOLE_TOL` (0.2) count as new holes (`stats.newHoleEdges`) — an order-independent backstop (BDD asserts 0).
 - **Fold-over prevention**: rejects collapses where a surviving triangle's normal would flip > 120° relative to its neighbor — high-curvature thin cylinders like fingers no longer produce stray protruding faces
-- **Protrude prevention**: pre-simulates each collapse and rejects candidates where an affected triangle's vertex would poke out of its neighbors' planes (beyond a scale-normalized threshold) — near-coplanar micro-triangle clusters on the fingertips are no longer "free"-merged into one big cross-surface triangle, so fingers no longer show protruding faces (round 4 fix)
+- **Protrude prevention**: pre-simulates each collapse and rejects candidates where an affected triangle's vertex would poke out of its neighbors' planes (beyond a scale-normalized threshold) — near-coplanar micro-triangle clusters on the fingertips are no longer "free"-merged into one big cross-surface triangle, so fingers no longer show protruding faces. The protrusion metric is single-source (`maxProtrudeOfVerts`: max distance of a triangle's vertices to its 1-ring neighbor planes — same as diagnostics/BDD). Round 5 trialed a per-vertex budget cap (`protrudeCap(medE)`); the global cap worsened the residual fingertip plane to 0.133 > input 0.0983, so **the cap is off by default** (kept as a unit-test capability).
 - **Double-sided micro-face locking**: triangles with area < 1e-3 and a neighbor normal angle > 120° (nail/cuticle double-sided slivers) have their vertices fully locked — collapse can no longer enlarge or worsen them into flipped faces
 - **Morph preservation**: every vertex referenced by vertex/UV morphs enters the locked set; morph indices are remapped after collapse
 - **UV seam preservation**: spatially coincident vertices are clustered (`findSeamClusters`) and locked so textures don't tear
@@ -300,7 +304,7 @@ yarn install
 ### Reduce + Verify
 
 ```bash
-yarn test:bdd       # BDD green (22 scenarios)
+yarn test:bdd       # BDD green (26 scenarios)
 npx tsc --noEmit    # type check
 ```
 
@@ -314,7 +318,7 @@ node src/tool/pmx-face-reduce/reduce.mjs --input in.pmx --output out.pmx --targe
 node src/tool/pmx-face-reduce/reduce.mjs \
   --input in.pmx --output out.pmx \
   --target-ratio 0.5 \
-  [--target-tri 20000] \
+  [--target-tri 35000] \
   [--lock-morph true] \
   [--lock-seams true] \
   [--lock-materials "0,1"] \
@@ -349,7 +353,7 @@ npx pmx-reduce-face-verify in.pmx out.pmx --target-ratio 0.5
 
 > ⚠️ **verify's lock flags must match reduce**: if reduce ran with `--lock-morph false` / `--lock-seams false`, verify must be given the same flags, otherwise the "morph/seam locked vertices" assertions validate against the default locked set and report false failures (the locked-position assertion doesn't apply then).
 
-> ⚠️ **`--target-tri` vs the protection floor**: `--min-retention`, small-material locking, plus the sliver/topology/fold-over/protrude guards add up to a minimum triangle count that no reduction goes below. If `--target-tri` is below that floor, reduction stops at the floor — the tool does not error, but `newTriangles > target` → `reductionMet=false` in the stats and `triWithinTarget=false` in verify. Pick `--target-tri ≥ floor` (the demo model's floor is ≈ 26,082: the protrude guard blocks deep collapses to keep the fingertips free of protruding faces — the round-4 fix's cost; `--target-tri 20000` is not reachable).
+> ⚠️ **`--target-tri` vs the protection floor**: `--min-retention`, small-material locking, plus the sliver/topology/fold-over/protrude guards add up to a minimum triangle count that no reduction goes below. If `--target-tri` is below that floor, reduction stops at the floor — the tool does not error, but `newTriangles > target` → `reductionMet=false` in the stats and `triWithinTarget=false` in verify. Pick `--target-tri ≥ floor` (the demo model's floor is ≈ **27,110**; `--target-ratio 0.5` nominal target 27,114 ≥ floor → reductionMet=true). Round 5 trialed a protrude-budget cap; the global cap changed the fold order and worsened the residual fingertip plane to 0.133 (> input 0.0983), so the cap is off by default (kept only as a unit-test capability).
 
 ## 🔬 Core API
 
@@ -440,10 +444,12 @@ loadPmx（parse with three mmdparser）
 - **Quadric error metric (QEM)**: each vertex accumulates the fundamental-plane equations of its incident triangles; collapsing merges both endpoints' error matrices, and the new position is the minimizer of the combined error (`quadric.mjs` — pure linear algebra, zero deps).
 - **Edge collapse**: each round pops the globally lowest-cost edge from a min-heap and collapses `u → v`; collapsed triangles are removed from the adjacency. Before each collapse, shape (`isValidCollapse`: degenerate / normal flip / sliver), topology (link condition + hole detection), and fold-over guards all pass — any failure rejects the candidate.
 - **Sliver prevention**: QEM only optimizes geometric error (point-to-plane distance), so a sliver with area ≈ 0 is judged "loss-free" — yet it renders as a protruding strip / stray triangle. Before each collapse, every surviving affected triangle is checked for `aspect (longest/shortest edge) ≥ 10 && maxL ≥ 0.5` ("thin + long"), and the collapse is rejected if any triggers it. Round 1 (`≥ 20 && ≥ 2`) already removed the fatal long strips (`maxL ≥ 2`), but short strips (`maxL` 1~2) remained on the head; the original model has only 154/54,228 (0.28%) triangles of the `≥ 10 && ≥ 1` shape, so tightening to 10/1.0 removed decimation-introduced short strips. Round 3: the hand region (|x|>4.5, y 9-18) has 0 original triangles with aspect > 10, yet LOD50 still added 8 finger slivers with aspect ≈ 11 and maxL ≈ 0.5 (allowed because maxL < 1.0) → tightening to 10/0.5 clears the finger slivers with negligible impact on the original inherent slivers (concentrated at the sock/chest).
-- **Topology guard (hole prevention)**: the link condition (Hoppe 1996) rejects collapses that would create a non-manifold edge (shared > 2) or sew boundary edges into the interior; hole detection backstops against interior→boundary transitions (e.g. a sock/underwear thin shell showing a hole). Cleaning up near-degenerate (coincident-vertex) triangles is exempt from the hole guard so defect cleanup isn't blocked.
+- **Topology guard (hole prevention)**: the link condition (Hoppe 1996) rejects collapses that would create a non-manifold edge (shared > 2) or sew boundary edges into the interior; hole detection backstops against interior→boundary transitions (e.g. a sock/underwear thin shell showing a hole). Round 5 narrowed the removesSlit exemption to "coincident-edge separation only" — the old implementation skipped the hole guard entirely while cleaning near-degenerate (coincident-edge) triangles, letting 30 real holes through.
+- **Post-reduction hole validation (round-5 backstop)**: after collapsing, a read-only scan matches output boundary-edge midpoints against input boundary-edge segments via a spatial hash (`countSpatiallyNewBoundaryEdges`); midpoints farther than `HOLE_TOL` (0.2) count as new holes → `stats.newHoleEdges`. Order-independent: no matter how the fold order changes, the final output is guaranteed hole-free.
 - **Locked set**: morph-referenced vertices, UV-seam cluster vertices, and all vertices of locked materials never move; weights are redistributed to the surviving vertex when a side collapses.
 - **min-retention**: when a collapse would remove triangles of a material whose remaining count would drop below `floor(original × minRetention)`, that collapse is rejected (the material's remaining triangles become immovable), preventing over-decimation of any region.
 - **Small-material protection**: materials with ≤ 500 original faces are added entirely to the locked set and kept at 100%.
+- **Protrude guard + budget cap (off by default)**: rejects collapses whose affected triangles' vertices poke out of neighbor planes beyond a scale-normalized threshold; each vertex's original protrusion provides a local allowance (high-curvature regions). Round 5 implemented the budget-cap mechanism `protrudeCap(medE)` (≈0.078 for the demo model): the fingertip's original budget ≈0.098 (double-sided micro faces / nail cuticle) would otherwise be mistaken for curvature allowance and let a 0.088 cross-surface plane through. **Measured: the global cap changed the fold order and worsened the residual fingertip plane to 0.133 > input 0.0983 (violating "max ≤ input") with no real-hole benefit → the production path passes `protrudeCapValue = Infinity` (cap off)**; the cap mechanism itself is covered by the BDD unit test (Scenario C).
 - **Byte-level rewrite**: `pmx-writer.mjs` locates PMX sections and rewrites only the vertex section / face-index section / material faceCount; everything else (morphs, bones, rigid bodies, joints, display frames, ...) is preserved byte-for-byte → zero risk outside the decimated sections.
 
 ## 🖥️ Running the Demo (static LOD comparison)
@@ -451,7 +457,7 @@ loadPmx（parse with three mmdparser）
 The demo is a browser-based static comparison page: three `MMDLoader` loads the original PMX and the 4 pre-generated LOD levels; OrbitControls rotates/zooms; an HUD shows the current LOD's vertex / triangle / material counts and the reduction ratio.
 
 ```bash
-yarn demo:prepare          # pre-generate LODs: reduce.mjs at ratios 1.0/0.5/0.25/0.1 → 4 levels + stats.json
+yarn demo:prepare          # pre-generate LODs: reduce.mjs at ratios 1.0/0.7/0.55/0.5 → 4 levels + stats.json
 yarn webpack:dev-server    # start dev-server → http://localhost:8096（demo/assets served statically at /assets）
 ```
 
@@ -460,11 +466,11 @@ Open `http://localhost:8096` and switch LOD levels via the bottom bar:
 | LOD | Vertices | Triangles | Reduction |
 |-----|----------|-----------|-----------|
 | LOD 100%（original） | 34,394 | 54,228 | — |
-| LOD 50% | 20,011 | 27,113 | 50.00% |
-| LOD 25% | 19,477 | 26,082 | 51.90% |
-| LOD 10% | 19,477 | 26,082 | 51.90% |
+| LOD 70% | 25,635 | 37,955 | 30.01% |
+| LOD 55% | 21,435 | 29,822 | 45.01% |
+| LOD 50% | 20,025 | 27,110 | 50.01% |
 
-> LOD 25% / 10% share the same triangle count because they hit the **min-retention + small-material protection + sliver/topology/fold-over/protrude floor** (the HUD shows "protection floor reached") — a direct demonstration of material + shape + topology + protrusion preservation. The round-4 protrude guard stops deep reduction at 26,082 to keep fingertip/nail details.
+> All four levels reach their nominal targets (`reductionMet=true`): 50% ≈ 27,110 sits at the **sliver/topology/fold-over/protrude protection floor**. Round 5 trialed a protrude-budget cap to tighten the floor, but the global cap changed the fold order and worsened the residual fingertip plane to 0.133 (> input 0.0983 — the protruding face the brother cannot tolerate), so the cap is off by default; the current 50% LOD has fingertip max protrusion 0.095 ≤ input 0.098 and 6 protruding faces ≤ input 8.
 
 - Stats source: `demo/assets/stats.json` (generated by `yarn demo:prepare`); the HUD falls back to live mesh geometry parsing when it's missing.
 - Model + textures: `demo/assets/XiaoMeiOriginFix_02_elrein.pmx` + `demo/assets/tex/` (the pmx and tex share a directory, so relative texture paths resolve automatically).
@@ -508,11 +514,11 @@ yarn test:bdd          # BDD（jest-cucumber，22 scenarios）：synthetic fixtu
 npx tsc --noEmit       # type check（demo/main.ts / test steps are .ts）
 
 # Optional：real-model integration check（not part of test:bdd；runs reduce + verify on the demo model and prints a JSON report）
-yarn test:real         # node scripts/real-model-check.mjs（default --target-ratio 0.5）
-node scripts/real-model-check.mjs --input your.pmx --target-ratio 0.25 --keep
+yarn test:real         # node scripts/real-model-check.mjs（default --target-ratio 0.5；target ≥ floor 27,110 → all green）
+node scripts/real-model-check.mjs --input your.pmx --target-ratio 0.55 --keep
 ```
 
-BDD coverage: output re-parseable / faces halved / morph-locked positions unchanged / no degenerates + normalized weights / material-header consistency / original file bytes unchanged / roundtrip zero-change / unit normals / `--target-tri` absolute target / automatic material protection (min-retention triggered) / `--lock-materials` material-level locking / dropDegenerate dropping zero-area + duplicate-index degenerate triangles / sliver guard (unit-level + tube fixture integration + thin finger-tube fixture integration) / topology guard (link condition + hole detection) / fold-over flip guard.
+BDD coverage: output re-parseable / faces halved / morph-locked positions unchanged / no degenerates + normalized weights / material-header consistency / original file bytes unchanged / roundtrip zero-change / unit normals / `--target-tri` absolute target / automatic material protection (min-retention triggered) / `--lock-materials` material-level locking / dropDegenerate dropping zero-area + duplicate-index degenerate triangles / sliver guard (unit-level + tube fixture integration + thin finger-tube fixture integration) / topology guard (link condition + hole detection) / fold-over flip guard / protrude guard + budget cap (unit-level + fingertip fixture integration) / narrowed removesSlit hole guard (only coincident-edge separation exempted) / mixed-fixture output boundary spatially contained in input.
 
 ## 📄 License
 

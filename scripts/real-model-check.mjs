@@ -4,13 +4,15 @@
 // 用法：
 //   node scripts/real-model-check.mjs                          # 默认 demo/assets 模型，--target-ratio 0.5
 //   node scripts/real-model-check.mjs --input x.pmx            # 指定模型
-//   node scripts/real-model-check.mjs --input x.pmx --target-ratio 0.25 --target-tri 20000 --keep
+//   node scripts/real-model-check.mjs --input x.pmx --target-ratio 0.55 --keep
 // 选项：
 //   --input <pmx>        要检查的模型（默认 demo/assets/XiaoMeiOriginFix_02_elrein.pmx）
 //   --output <pmx>       减面产物路径（默认 os.tmpdir() 临时文件，不污染仓库）
 //   --target-ratio <n>   减面目标比例（默认 0.5）
-//   --target-tri <n>     绝对三角形目标（存在时优先于 --target-ratio）
 //   --keep               保留减面产物（默认结束后删除临时文件）
+// 注意（质量优先，第五轮）：demo 模型减面地板 ≈33489（cap 后），--target-ratio 0.5/0.55 名义比例低于地板
+// → reductionMet=false、verify triWithinTarget=false，属预期（「质量优先允许 reductionMet=false」）；
+// 其余 verify 检查（无退化/法线单位/权重归一化/材质一致等）应全绿。
 // 输出：stdout JSON { ok, input, output, targetRatio, reduce, verify }；全绿 exit 0，否则 exit 1
 
 import fs from 'fs';

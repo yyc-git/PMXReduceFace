@@ -28,6 +28,10 @@ import {
     collapseCreatesHole,
     collapseFoldOver,
     buildVertexTris,
+    collapseCreatesHoleNarrow,
+    collapseProtrudeMax,
+    maxProtrudeOfVerts,
+    buildEdgeTris,
 } from '../../src/tool/pmx-face-reduce/qem.mjs';
 
 let SLIVER_ASPECT_MAX = 20;
@@ -35,10 +39,13 @@ let SLIVER_MAXL_MIN = 2.0;
 let qemTriEdgeStats = null;
 let qemIsSliver = null;
 let PROTRUDE_MAX = 0.08;
+let PROTRUDE_RATIO = 0.4;
 let FLIP_LOCK_ANGLE = 120;
 let FLIP_LOCK_AREA = 1e-3;
 let qemCollapseProtrudes = null;
 let qemCollectFlip = null;
+let qemProtrudeCap = null;
+let qemCountSpatiallyNewBoundaryEdges = null;
 try {
   const qem = await import('../../src/tool/pmx-face-reduce/qem.mjs');
   if (typeof qem.SLIVER_ASPECT_MAX === 'number') SLIVER_ASPECT_MAX = qem.SLIVER_ASPECT_MAX;
@@ -46,10 +53,13 @@ try {
   if (typeof qem.triEdgeStats === 'function') qemTriEdgeStats = qem.triEdgeStats;
   if (typeof qem.isSliverTriangle === 'function') qemIsSliver = qem.isSliverTriangle;
   if (typeof qem.PROTRUDE_MAX === 'number') PROTRUDE_MAX = qem.PROTRUDE_MAX;
+  if (typeof qem.PROTRUDE_RATIO === 'number') PROTRUDE_RATIO = qem.PROTRUDE_RATIO;
   if (typeof qem.FLIP_LOCK_ANGLE === 'number') FLIP_LOCK_ANGLE = qem.FLIP_LOCK_ANGLE;
   if (typeof qem.FLIP_LOCK_AREA === 'number') FLIP_LOCK_AREA = qem.FLIP_LOCK_AREA;
   if (typeof qem.collapseProtrudes === 'function') qemCollapseProtrudes = qem.collapseProtrudes;
   if (typeof qem.collectFlipMicroFaceVertices === 'function') qemCollectFlip = qem.collectFlipMicroFaceVertices;
+  if (typeof qem.protrudeCap === 'function') qemProtrudeCap = qem.protrudeCap;
+  if (typeof qem.countSpatiallyNewBoundaryEdges === 'function') qemCountSpatiallyNewBoundaryEdges = qem.countSpatiallyNewBoundaryEdges;
 } catch (e) { /* 修复前 qem.mjs：本地常量/实现兜底（值固定为修复引入的 0.08/120/1e-3） */ }
 
 // 突起守卫（优先 qem.mjs；RED 验证时 qem.mjs 被临时 revert 无该导出 → 恒 false 放行 → 断言失败）
@@ -61,6 +71,81 @@ function collapseProtrudes(...args) {
 function collectFlipMicroFaceVertices(...args) {
   if (qemCollectFlip) return qemCollectFlip(...args);
   return new Set();
+}
+// 预算 cap 函数（优先 qem.mjs；RED 验证时 → 本地同公式）
+function protrudeCap(medE) {
+  if (qemProtrudeCap) return qemProtrudeCap(medE);
+  return PROTRUDE_RATIO * medE * 1.5;
+}
+// 输出边界边空间上「新增」的数量（优先 qem.mjs 核心；RED 验证时 → 本地同实现）
+function countSpatiallyNewBoundaryEdges(mIn, mOut, tol = 0.2, cell = 0.5) {
+  if (qemCountSpatiallyNewBoundaryEdges) {
+    return qemCountSpatiallyNewBoundaryEdges(
+      mIn.vertices.map((v) => v.position), mIn.faces.map((f) => f.indices), null,
+      mOut.vertices.map((v) => v.position), mOut.faces.map((f) => f.indices), null, tol, cell
+    );
+  }
+  // 本地兜底：与 qem.mjs 同口径（输出边界边中点距输入边界边线段 > tol）
+  const key = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+  const boundaryMid = (m) => {
+    const cnt = new Map(); const mid = new Map();
+    for (const f of m.faces) {
+      const [a, b, c] = f.indices;
+      for (const [x, y] of [[a, b], [b, c], [c, a]]) {
+        const k = key(x, y);
+        cnt.set(k, (cnt.get(k) || 0) + 1);
+        if (!mid.has(k)) {
+          const p = m.vertices[x].position, q = m.vertices[y].position;
+          mid.set(k, [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2]);
+        }
+      }
+    }
+    const out = [];
+    for (const [k, c] of cnt) if (c === 1) out.push(mid.get(k));
+    return out;
+  };
+  const segDist2 = (p, a, b) => {
+    const abx = b[0] - a[0], aby = b[1] - a[1], abz = b[2] - a[2];
+    const apx = p[0] - a[0], apy = p[1] - a[1], apz = p[2] - a[2];
+    const len2 = abx * abx + aby * aby + abz * abz;
+    if (len2 < 1e-16) return apx * apx + apy * apy + apz * apz;
+    let t = (apx * abx + apy * aby + apz * abz) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cx = a[0] + abx * t - p[0], cy = a[1] + aby * t - p[1], cz = a[2] + abz * t - p[2];
+    return cx * cx + cy * cy + cz * cz;
+  };
+  const inSegs = [];
+  {
+    const cnt = new Map(); const seg = new Map(); const mid = new Map();
+    for (const f of mIn.faces) {
+      const [a, b, c] = f.indices;
+      for (const [x, y] of [[a, b], [b, c], [c, a]]) {
+        const k = key(x, y);
+        cnt.set(k, (cnt.get(k) || 0) + 1);
+        if (!seg.has(k)) { seg.set(k, [mIn.vertices[x].position, mIn.vertices[y].position]); const p = mIn.vertices[x].position, q = mIn.vertices[y].position; mid.set(k, [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2, (p[2] + q[2]) / 2]); }
+      }
+    }
+    for (const [k, c] of cnt) if (c === 1) inSegs.push({ seg: seg.get(k), mid: mid.get(k) });
+  }
+  const grid = new Map();
+  for (const { seg, mid } of inSegs) {
+    const gk = `${Math.floor(mid[0] / cell)},${Math.floor(mid[1] / cell)},${Math.floor(mid[2] / cell)}`;
+    if (!grid.has(gk)) grid.set(gk, []);
+    grid.get(gk).push(seg);
+  }
+  const tol2 = tol * tol;
+  let newCount = 0;
+  for (const p of boundaryMid(mOut)) {
+    const gx = Math.floor(p[0] / cell), gy = Math.floor(p[1] / cell), gz = Math.floor(p[2] / cell);
+    let ok = false;
+    outer: for (let dx = -1; dx <= 1 && !ok; dx++) for (let dy = -1; dy <= 1 && !ok; dy++) for (let dz = -1; dz <= 1 && !ok; dz++) {
+      const segs = grid.get(`${gx + dx},${gy + dy},${gz + dz}`);
+      if (!segs) continue;
+      for (const [sa, sb] of segs) if (segDist2(p, sa, sb) < tol2) { ok = true; break outer; }
+    }
+    if (!ok) newCount++;
+  }
+  return newCount;
 }
 
 // 边长统计（优先 qem.mjs；fallback 与 qem.triEdgeStats 实现一致）
@@ -224,6 +309,86 @@ function buildFingertipPmx() {
   };
   addMicroPair(4, 18);
   addMicroPair(12, 18);
+  // 高突起 spike（第五轮 Scenario D 校准）：复用管壁既有顶点 (u=4,r=18)/(u=5,r=18) 的边，
+  // 向外拉一个顶点 p_c（距壁 ~0.07）→ 输入最大突起 ≈0.10，供「输出最大突起 ≤ 输入最大突起」断言校准。
+  {
+    const seg = 16, radius = 0.3, rings = 20, len = 2;
+    const u = 4, r = 18, spike = 0.07;
+    const a0 = (u / seg) * Math.PI * 2;
+    const y0 = (r / rings) * len;
+    const nx = Math.cos(a0 + (Math.PI / 2) / seg), nz = Math.sin(a0 + (Math.PI / 2) / seg);
+    const iA = idx(u, r), iB = idx(u + 1, r);
+    const mid = [(positions[iA][0] + positions[iB][0]) / 2, y0, (positions[iA][2] + positions[iB][2]) / 2];
+    const iC = positions.length;
+    positions.push([mid[0] + nx * spike, y0, mid[2] + nz * spike]);
+    tris.push([iA, iB, iC]);
+  }
+  return buildRawMeshPmx(positions, tris);
+}
+
+// 混合 fixture（第五轮 Scenario B）：细管（R0.3/16×20，袜子/手指比例开放薄壳）
+// + 管壁中段挖 1×1 quad 换成小「金字塔鼓包」（中心外偏 0.06，4 个近共面微三角扇形，保持流形）
+//   → QEM 把近共面微三角「免费」合并成跨曲面大平面 → 突起守卫拒绝；
+// + 1 处共点近退化微片（独立微片，边 <1e-4，触发 removesSlit 清理路径）。
+function buildMixedTubePmx() {
+  const seg = 16, len = 2, radius = 0.3, rings = 20;
+  const positions = [];
+  const tris = [];
+  const idx = (u, r) => r * (seg + 1) + u;
+  for (let r = 0; r <= rings; r++) {
+    const y = (r / rings) * len;
+    for (let u = 0; u <= seg; u++) {
+      const a = (u / seg) * Math.PI * 2;
+      positions.push([Math.cos(a) * radius, y, Math.sin(a) * radius]);
+    }
+  }
+  for (let r = 0; r < rings; r++) for (let u = 0; u < seg; u++) {
+    const a = idx(u, r), b = idx(u + 1, r), d = idx(u, r + 1), e = idx(u + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
+  }
+  // 小金字塔鼓包：挖掉管壁 1×1 quad 区域（u=8..9, r=10..11）的 2 个三角，换成 4 个近共面微三角扇形
+  {
+    const bumpH = 0.06;
+    const u0 = 8, u1 = 9, r0 = 10, r1 = 11;
+    const inRegion = (t) => {
+      const x = t.filter((i) => {
+        const u = i % (seg + 1), r = Math.floor(i / (seg + 1));
+        return u >= u0 && u <= u1 && r >= r0 && r <= r1;
+      });
+      return x.length === 3;
+    };
+    for (let i = tris.length - 1; i >= 0; i--) if (inRegion(tris[i])) tris.splice(i, 1);
+    const ring = [];
+    for (let u = u0; u <= u1; u++) ring.push(idx(u, r0));
+    for (let r = r0 + 1; r <= r1; r++) ring.push(idx(u1, r));
+    for (let u = u1 - 1; u >= u0; u--) ring.push(idx(u, r1));
+    for (let r = r1 - 1; r > r0; r--) ring.push(idx(u0, r));
+    const cu = (u0 + u1) / 2, cr = (r0 + r1) / 2;
+    const a0 = (cu / seg) * Math.PI * 2;
+    const nx = Math.cos(a0), nz = Math.sin(a0);
+    const yc = (cr / rings) * len;
+    const pc = [Math.cos(a0) * (radius + bumpH), yc, Math.sin(a0) * (radius + bumpH)];
+    const center = positions.length;
+    positions.push(pc);
+    for (let k = 0; k < ring.length; k++) {
+      const A = ring[k], B = ring[(k + 1) % ring.length];
+      tris.push([center, A, B]);
+    }
+  }
+  // 共点近退化微片：两三角共享一条 <1e-4 的边（p0≈p1），独立微片（触发 removesSlit 清理路径）
+  {
+    const u = 12, r = 12;
+    const a = (u / seg) * Math.PI * 2;
+    const y = (r / rings) * len;
+    const nx = Math.cos(a), nz = Math.sin(a);
+    const p0 = [Math.cos(a) * radius, y, Math.sin(a) * radius];
+    const p1 = [Math.cos(a) * radius + nx * 5e-5, y + 5e-5, Math.sin(a) * radius + nz * 5e-5];
+    const i0 = positions.length; positions.push(p0);
+    const i1 = positions.length; positions.push(p1);
+    const i2 = positions.length; positions.push([p0[0] + nx * 0.05, y + 0.02, p0[2] + nz * 0.05]);
+    const i3 = positions.length; positions.push([p0[0] - nx * 0.05, y - 0.02, p0[2] - nz * 0.05]);
+    tris.push([i0, i1, i2], [i0, i1, i3]);
+  }
   return buildRawMeshPmx(positions, tris);
 }
 
@@ -249,29 +414,16 @@ function triPlaneInfo(m, ti) {
   const nl = Math.hypot(nx, ny, nz) || 1;
   return { n: [nx / nl, ny / nl, nz / nl], verts: [p0, p1, p2] };
 }
-// 突起面数：顶点到邻接三角形平面最大距离 > PROTRUDE_MAX 的三角形数（阈值与 qem.mjs 单一来源）
+// 突起面数：顶点到邻接三角形平面最大距离 > PROTRUDE_MAX 的三角形数（阈值与 qem.mjs 单一来源）。
+// 度量单一来源：qem.mjs 的 maxProtrudeOfVerts（「顶点到 1-ring 邻接面最大距离」，第五轮统一口径）
 function countProtrudingFaces(m) {
-  const edgeMap = buildEdgeTrisMap(m);
-  const info = m.faces.map((_, ti) => triPlaneInfo(m, ti));
+  const positions = m.vertices.map((v) => v.position);
+  const tris = m.faces.map((f) => f.indices);
+  const edgeMap = buildEdgeTris(tris);
   let count = 0;
   let worst = 0;
-  for (let ti = 0; ti < m.faces.length; ti++) {
-    const it = info[ti];
-    const [a, b, c] = m.faces[ti].indices;
-    const nbs = new Set();
-    for (const [x, y] of [[a, b], [b, c], [c, a]]) {
-      const k = x < y ? `${x}:${y}` : `${y}:${x}`;
-      for (const tj of edgeMap.get(k) || []) if (tj !== ti) nbs.add(tj);
-    }
-    let maxP = 0;
-    for (const tj of nbs) {
-      const nj = info[tj];
-      const q = nj.verts[0];
-      for (const p of it.verts) {
-        const d = Math.abs((p[0] - q[0]) * nj.n[0] + (p[1] - q[1]) * nj.n[1] + (p[2] - q[2]) * nj.n[2]);
-        if (d > maxP) maxP = d;
-      }
-    }
+  for (let ti = 0; ti < tris.length; ti++) {
+    const maxP = maxProtrudeOfVerts(positions, tris, ti, edgeMap);
     if (maxP > worst) worst = maxP;
     if (maxP > PROTRUDE_MAX) count++;
   }
@@ -621,6 +773,31 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
   };
 }
 
+// ---------- 洞守卫收窄单元测试（第五轮 Scenario A，removesSlit 豁免收窄） ----------
+// 构造：u=0, v=1, w=2。三角形 [0,1,2]（被移除，边 (0,2) 近退化 5e-5 < NEAR_DEGENERATE_EDGE）
+// + [0,2,4]（存活）。折叠 (0,1) 会把内部边 (0,2) 分离成边界（preU=2, post=1）= 洞。
+// 收窄后的洞守卫只豁免「共点边分离成边界」，仍拒绝其它洞（非共点 ignore 边无效）。
+// RED 能力：把 collapseCreatesHole 的 ignoreEdges 豁免退化（reject-all）→ coincidentExempted 变 true → 红。
+{
+  const positions = [[0, 0, 0], [1, 0, 0], [0, 0, 5e-5], [0, 0, 0], [0, 1, 0]];
+  const tris = [[0, 1, 2], [0, 2, 4]];
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(5, tris, aliveT);
+  facts.unitHoleNarrow = {
+    nonCoincidentRejected: collapseCreatesHole(tris, aliveT, vTris, 0, 1) === true,
+    wrongIgnoreRejected: collapseCreatesHole(tris, aliveT, vTris, 0, 1, new Set(['0:4'])) === true,
+    coincidentExempted: collapseCreatesHole(tris, aliveT, vTris, 0, 1, new Set(['0:2'])) === false,
+    narrowExemptsCoincident: collapseCreatesHoleNarrow(tris, aliveT, vTris, 0, 1, positions) === false,
+    narrowRejectsOther: (() => {
+      const tris2 = [[0, 1, 2], [0, 1, 3], [0, 2, 4], [0, 3, 5]];
+      const alive2 = new Uint8Array(tris2.length).fill(1);
+      const vt2 = buildVertexTris(6, tris2, alive2);
+      const pos2 = [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 1, 1], [0, 0, 1.5]];
+      return collapseCreatesHoleNarrow(tris2, alive2, vt2, 0, 1, pos2) === true;
+    })(),
+  };
+}
+
 // ---------- 折叠翻转守卫单元测试（P2 fold-over） ----------
 // C1：T1=(0,2,3) 与 T2=(2,4,3) 共边 (2,3)，法线均 +z。折叠 u=0 → (0.5,-1,0) 把 T1 翻到 -y 侧
 // → T1 新法线 -z 与 T2 夹角 180°（> FOLD_ANGLE_MAX_DEG 且原始夹角 0° 正常）→ collapseFoldOver 必须 true。
@@ -649,6 +826,41 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
     rejected: collapseProtrudes(positions, tris, aliveT, vTris, 0, 1, [0.5, 0, 1]) === true,
     normalAccepted: collapseProtrudes(positions, tris, aliveT, vTris, 0, 1, [0.5, 0, 0]) === false,
     protrudeMax: PROTRUDE_MAX,
+  };
+}
+
+// ---------- 预算 cap 单元测试（第五轮 Scenario C） ----------
+// 平面 3×3 网格，折叠 (4,5) 到 [0.5,1,d]：突起 P 随 d 平滑增长（实测 d=0.044 → P≈0.088，
+// 介于预算 0.098 与 cap 0.078 之间）。预算 0.098 = 模拟指尖输入原始突起预算；cap 0.078 ≈ protrudeCap(0.13)。
+// 无 cap：allowance = max(PROTRUDE_MAX, 预算) = 0.098 > P → 放行（budgetWouldAllow）；
+// 有 cap：allowance = max(PROTRUDE_MAX, min(0.098, 0.078)) = 0.078 < P → 拒绝（capRejects）；
+// 小突起折叠（d=0.02，P≈0.04 < cap）→ 不误杀（capAllowsNormal）。
+// RED 能力：把 cap 参数退化成不封顶（allowance = max(protrudeMax, budget)）→ capRejects 变 false → 红。
+{
+  const N = 3;
+  const positions = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) positions.push([c, r, 0]);
+  const idx = (c, r) => r * N + c;
+  const tris = [];
+  for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+    const a = idx(c, r), b = idx(c + 1, r), d = idx(c, r + 1), e = idx(c + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
+  }
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(positions.length, tris, aliveT);
+  const bigNew = [0.5, 1, 0.044];
+  const smallNew = [0.5, 1, 0.02];
+  const P = collapseProtrudeMax(positions, tris, aliveT, vTris, 4, 5, bigNew);
+  const budget = 0.098;
+  const cap = 0.078;
+  const budgets = new Float64Array(positions.length).fill(budget);
+  facts.unitProtrudeCap = {
+    measured: P,
+    inBand: P > cap && P < budget,
+    budgetWouldAllow: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, bigNew, PROTRUDE_MAX, budgets, Infinity) === false,
+    capRejects: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, bigNew, PROTRUDE_MAX, budgets, cap) === true,
+    capAllowsNormal: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, smallNew, PROTRUDE_MAX, budgets, cap) === false,
+    capValue: protrudeCap(0.13),
   };
 }
 
@@ -876,6 +1088,34 @@ function parseOutput(p) {
     facts.thinTubeOutSliverCount = c.count;
     facts.thinTubeOutWorst = c.worst;
     facts.thinTubeOutTri = thinOutModel.faces.length;
+  }
+}
+
+// ---------- 洞回归（第五轮 Scenario B 集成级）：混合 fixture（细管 + 近共面微三角簇 + 共点近退化微片） ----------
+// 输出边界边空间上必须 ⊆ 输入边界边（countSpatiallyNewBoundaryEdges === 0）+ 无非流形边 + stats.newHoleEdges===0。
+// RED 能力：把洞守卫退化（collapseCreatesHoleNarrow 恒 false / collapseCreatesHole 恒 false）→
+// 细管内部边变边界 → 空间新增边界边 > 0 → 断言失败；恢复守卫 → 0 → 绿。
+{
+  const mixedBuf = buildMixedTubePmx();
+  const mixedInput = path.join(tmpDir, 'mixed-tube.pmx');
+  const mixedOut = outPath('mixed-tube');
+  fs.writeFileSync(mixedInput, mixedBuf);
+  const mixedIn = parser.parsePmx(bufToAB(mixedBuf), false);
+  facts.mixedTubeInputTri = mixedIn.faces.length;
+  const mixedInManifold = edgeManifoldStats(mixedIn);
+  facts.mixedTubeInBoundary = mixedInManifold.boundary;
+  facts.mixedTubeInNonManifold = mixedInManifold.nonManifold;
+  const r = runReduce(['--input', mixedInput, '--output', mixedOut, '--target-ratio', '0.5', '--lock-morph', 'false', '--lock-seams', 'false', '--min-retention', '0', '--lock-small-materials', 'false']);
+  facts.mixedTubeExit = r.exit;
+  facts.mixedTubeStats = r.stats;
+  const mixedOutModel = parseOutput(mixedOut);
+  facts.mixedTubeParseable = !!(mixedOutModel && !mixedOutModel.parseError);
+  facts.mixedTubeOutTri = mixedOutModel && !mixedOutModel.parseError ? mixedOutModel.faces.length : 0;
+  facts.mixedTubeOutNewBnd = -1;
+  facts.mixedTubeOutNonManifold = -1;
+  if (mixedOutModel && !mixedOutModel.parseError) {
+    facts.mixedTubeOutNewBnd = countSpatiallyNewBoundaryEdges(mixedIn, mixedOutModel);
+    facts.mixedTubeOutNonManifold = edgeManifoldStats(mixedOutModel).nonManifold;
   }
 }
 

@@ -189,3 +189,46 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     And 输出中法线夹角 >150° 的翻转面数不超过输入该数量
     And 输出文件可解析且 reduce 退出码为 0
 
+  # ★ 洞守卫收窄回归（第五轮 Scenario A，单元级）：removesSlit 豁免收窄——只豁免「共点边分离成边界」
+  # 构造：内部边 (0,1) 一端落边界 + 被移除三角形 [0,1,2] 含共点边（5e-5 < NEAR_DEGENERATE_EDGE）。
+  # RED 能力：把 collapseCreatesHole 的 ignoreEdges 豁免退化（reject-all）→ coincidentExempted 变 true → 红
+  Scenario: 洞守卫收窄只豁免共点边分离仍拒绝其它洞
+    Given 构造内部边变边界 + 被移除三角形含共点边（<NEAR_DEGENERATE_EDGE）的折叠候选（u=0/v=1/w=2，边 (0,2) 近退化）
+    When 直接调用 qem.mjs 的 collapseCreatesHole（带/不带 ignoreEdges）与 collapseCreatesHoleNarrow
+    Then 无 ignoreEdges 时洞被拒绝（collapseCreatesHole 返回 true）
+    And 传入非共点 ignoreEdges（"0:4"）仍被拒绝（只有共点边本身被豁免）
+    And 传入共点边 ignoreEdges（"0:2"）被豁免（返回 false，不误杀）
+    And collapseCreatesHoleNarrow 自动收集共点边并豁免（近退化清理放行）
+    And 无近退化边的洞候选 collapseCreatesHoleNarrow 仍返回 true（洞被拒绝）
+
+  # ★ 预算 cap 回归（第五轮 Scenario C，单元级）：预算 0.098 放行 0.088 级突起，cap 0.078 拒绝
+  # 平面 3×3 网格折叠 (4,5)→[0.5,1,d]：突起 P 随 d 平滑（d=0.044 → P≈0.088，介于 cap 与预算之间）。
+  # RED 能力：把 cap 参数退化成不封顶（allowance=max(protrudeMax,budget)）→ capRejects 变 false → 红
+  Scenario: 突起预算加 cap 后拒绝 0.088 级突起且不误杀正常折叠
+    Given 构造平面 3×3 网格 + 折叠 (4,5) 到 [0.5,1,0.044] 的候选（突起 P≈0.088，collapseProtrudeMax 实测）
+    When 直接调用 qem.mjs 的 collapseProtrudes（预算数组 0.098，cap 0.078 / 不封顶）
+    Then 实测 P 落在 (cap=0.078, 预算=0.098) 带内（候选构造有效）
+    And 无 cap（Infinity）时 0.088 级突起被 0.098 预算放行（返回 false）
+    And 有 cap（0.078）时该突起被拒绝（返回 true，cap 生效）
+    And 小突起折叠（d=0.02，P≈0.04 < cap）仍放行（cap 不误杀正常高曲率折叠）
+
+  # ★ 洞回归（第五轮 Scenario B，集成级）：混合 fixture（细管 + 近共面微三角簇 + 共点近退化微片）
+  # 输出边界边空间必须 ⊆ 输入边界边（countSpatiallyNewBoundaryEdges === 0）+ 无非流形 + stats.newHoleEdges===0。
+  # RED 能力：把洞守卫退化（collapseCreatesHoleNarrow 恒 false / collapseCreatesHole 恒 false）→
+  # 细管内部边变边界 → 空间新增边界边 > 0 → 断言失败；恢复守卫 → 0 → 绿
+  Scenario: 混合 fixture 减面输出边界边空间包含于输入且无非流形
+    Given 合成混合 fixture PMX 已生成（细管 R0.3/16×20 + 管壁中段近共面微三角簇 + 1 处共点近退化微片）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then 输出边界边空间 ⊆ 输入边界边（countSpatiallyNewBoundaryEdges 为 0）
+    And 输出无共享数大于 2 的非流形边
+    And 减面统计 newHoleEdges 为 0（collapseMesh 内部洞校验兜底）
+
+  # ★ 突起回归（第五轮 Scenario D，集成级加强）：指尖 fixture 输出最大突起 ≤ 输入最大突起
+  # 输入含高突起 spike（≈0.10）校准；输出（守卫开启）≤ 输入 → 绿。
+  # RED 能力：revert 突起守卫（collapseProtrudes 恒 false）→ 指甲盖微三角团合并成大平面 → 输出最大突起超输入 → 红
+  Scenario: 指尖 fixture 输出最大突起不超过输入最大突起
+    Given 合成指尖 fixture PMX 已生成（细管 + 半球形指甲盖 + 2 对双面微片 + 高突起 spike）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then 输出最大突起（fingerTipOutProtrudeWorst）不超过输入最大突起（fingerTipInProtrudeWorst）
+    And 输出文件可解析且 reduce 退出码为 0
+

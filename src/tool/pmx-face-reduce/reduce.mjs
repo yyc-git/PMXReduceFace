@@ -166,6 +166,7 @@ export function reduceFaces({
         foldOverRejects: stats.foldOverRejects,
         protrudeRejects: stats.protrudeRejects,
         materialRejects: stats.materialRejects,
+        newHoleEdges: stats.newHoleEdges,
         durationMs: Date.now() - t0,
         perMaterial: model.materials.map((m, i) => ({ index: i, name: m.name, origTri: m.faceCount, newTri: materialTriCounts[i] })),
     };

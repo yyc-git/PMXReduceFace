@@ -37,6 +37,7 @@ interface ReduceStats {
   collapses: number;
   rejected: number;
   protrudeRejects?: number;
+  newHoleEdges?: number;
   durationMs: number;
   perMaterial: PerMaterialStat[];
 }
@@ -167,6 +168,30 @@ interface Facts {
     lockCount: number;
     notMislock: boolean;
   };
+  unitHoleNarrow: {
+    nonCoincidentRejected: boolean;
+    wrongIgnoreRejected: boolean;
+    coincidentExempted: boolean;
+    narrowExemptsCoincident: boolean;
+    narrowRejectsOther: boolean;
+  };
+  unitProtrudeCap: {
+    measured: number;
+    inBand: boolean;
+    budgetWouldAllow: boolean;
+    capRejects: boolean;
+    capAllowsNormal: boolean;
+    capValue: number;
+  };
+  mixedTubeInputTri: number;
+  mixedTubeInBoundary: number;
+  mixedTubeInNonManifold: number;
+  mixedTubeExit: number;
+  mixedTubeStats: ReduceStats | null;
+  mixedTubeParseable: boolean;
+  mixedTubeOutTri: number;
+  mixedTubeOutNewBnd: number;
+  mixedTubeOutNonManifold: number;
   fingerTipInputTri: number;
   fingerTipInProtrude: number;
   fingerTipInProtrudeWorst: number;
@@ -657,6 +682,91 @@ defineFeature(feature, (test) => {
             expect(facts.fingerTipOutTri).toBeGreaterThan(0);
             expect(facts.fingerTipStats).toBeTruthy();
             expect(facts.fingerTipStats!.newTriangles).toBeLessThan(facts.fingerTipInputTri);
+        });
+    });
+
+    test('洞守卫收窄只豁免共点边分离仍拒绝其它洞', ({ given, when, then, and }) => {
+        given(/^构造内部边变边界 \+ 被移除三角形含共点边（<NEAR_DEGENERATE_EDGE）的折叠候选（u=0\/v=1\/w=2，边 \(0,2\) 近退化）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseCreatesHole（带\/不带 ignoreEdges）与 collapseCreatesHoleNarrow$/, () => {
+            facts = runHelper();
+        });
+        then(/^无 ignoreEdges 时洞被拒绝（collapseCreatesHole 返回 true）$/, () => {
+            expect(facts.unitHoleNarrow.nonCoincidentRejected).toBe(true);
+        });
+        and(/^传入非共点 ignoreEdges（"0:4"）仍被拒绝（只有共点边本身被豁免）$/, () => {
+            expect(facts.unitHoleNarrow.wrongIgnoreRejected).toBe(true);
+        });
+        and(/^传入共点边 ignoreEdges（"0:2"）被豁免（返回 false，不误杀）$/, () => {
+            expect(facts.unitHoleNarrow.coincidentExempted).toBe(true);
+        });
+        and(/^collapseCreatesHoleNarrow 自动收集共点边并豁免（近退化清理放行）$/, () => {
+            expect(facts.unitHoleNarrow.narrowExemptsCoincident).toBe(true);
+        });
+        and(/^无近退化边的洞候选 collapseCreatesHoleNarrow 仍返回 true（洞被拒绝）$/, () => {
+            expect(facts.unitHoleNarrow.narrowRejectsOther).toBe(true);
+        });
+    });
+
+    test('突起预算加 cap 后拒绝 0.088 级突起且不误杀正常折叠', ({ given, when, then, and }) => {
+        given(/^构造平面 3×3 网格 \+ 折叠 \(4,5\) 到 \[0\.5,1,0\.044\] 的候选（突起 P≈0\.088，collapseProtrudeMax 实测）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseProtrudes（预算数组 0\.098，cap 0\.078 \/ 不封顶）$/, () => {
+            facts = runHelper();
+        });
+        then(/^实测 P 落在 \(cap=0\.078, 预算=0\.098\) 带内（候选构造有效）$/, () => {
+            expect(facts.unitProtrudeCap.inBand).toBe(true);
+            expect(facts.unitProtrudeCap.measured).toBeGreaterThan(facts.unitProtrudeCap.capValue * 0.9);
+        });
+        and(/^无 cap（Infinity）时 0\.088 级突起被 0\.098 预算放行（返回 false）$/, () => {
+            expect(facts.unitProtrudeCap.budgetWouldAllow).toBe(true);
+        });
+        and(/^有 cap（0\.078）时该突起被拒绝（返回 true，cap 生效）$/, () => {
+            expect(facts.unitProtrudeCap.capRejects).toBe(true);
+        });
+        and(/^小突起折叠（d=0\.02，P≈0\.04 < cap）仍放行（cap 不误杀正常高曲率折叠）$/, () => {
+            expect(facts.unitProtrudeCap.capAllowsNormal).toBe(true);
+        });
+    });
+
+    test('混合 fixture 减面输出边界边空间包含于输入且无非流形', ({ given, when, then, and }) => {
+        given(/^合成混合 fixture PMX 已生成（细管 R0\.3\/16×20 \+ 管壁中段近共面微三角簇 \+ 1 处共点近退化微片）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出边界边空间 ⊆ 输入边界边（countSpatiallyNewBoundaryEdges 为 0）$/, () => {
+            expect(facts.mixedTubeExit).toBe(0);
+            expect(facts.mixedTubeParseable).toBe(true);
+            expect(facts.mixedTubeOutNewBnd).toBe(0);
+        });
+        and(/^输出无共享数大于 2 的非流形边$/, () => {
+            expect(facts.mixedTubeInNonManifold).toBe(0);
+            expect(facts.mixedTubeOutNonManifold).toBe(0);
+        });
+        and(/^减面统计 newHoleEdges 为 0（collapseMesh 内部洞校验兜底）$/, () => {
+            expect(facts.mixedTubeStats).toBeTruthy();
+            expect(facts.mixedTubeStats!.newHoleEdges).toBe(0);
+        });
+    });
+
+    test('指尖 fixture 输出最大突起不超过输入最大突起', ({ given, when, then, and }) => {
+        given(/^合成指尖 fixture PMX 已生成（细管 \+ 半球形指甲盖 \+ 2 对双面微片 \+ 高突起 spike）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出最大突起（fingerTipOutProtrudeWorst）不超过输入最大突起（fingerTipInProtrudeWorst）$/, () => {
+            expect(facts.fingerTipExit).toBe(0);
+            expect(facts.fingerTipOutProtrudeWorst).toBeLessThanOrEqual(facts.fingerTipInProtrudeWorst);
+        });
+        and(/^输出文件可解析且 reduce 退出码为 0$/, () => {
+            expect(facts.fingerTipParseable).toBe(true);
+            expect(facts.fingerTipOutTri).toBeGreaterThan(0);
         });
     });
 });

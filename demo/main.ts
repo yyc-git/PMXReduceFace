@@ -13,9 +13,9 @@ const MODEL_NAME = 'XiaoMeiOriginFix_02_elrein';
 // LOD 档位与 scripts/prepare-demo.mjs 生成的 stats.json 对齐（name → 文件名后缀）
 const LODS: Array<{ name: string; file: string }> = [
   { name: 'LOD_100', file: `${MODEL_NAME}.LOD100.pmx` },
+  { name: 'LOD_70', file: `${MODEL_NAME}.LOD70.pmx` },
+  { name: 'LOD_55', file: `${MODEL_NAME}.LOD55.pmx` },
   { name: 'LOD_50', file: `${MODEL_NAME}.LOD50.pmx` },
-  { name: 'LOD_25', file: `${MODEL_NAME}.LOD25.pmx` },
-  { name: 'LOD_10', file: `${MODEL_NAME}.LOD10.pmx` },
 ];
 
 interface PerMaterialStat {

@@ -18,12 +18,14 @@ const MODEL_NAME = 'XiaoMeiOriginFix_02_elrein';
 const INPUT_PMX = path.join(ASSETS, `${MODEL_NAME}.pmx`);
 const STATS_JSON = path.join(ASSETS, 'stats.json');
 
-// LOD 档位：targetRatio 1.0 / 0.5 / 0.25 / 0.1 → LOD_100 / LOD_50 / LOD_25 / LOD_10
+// LOD 档位（质量优先，第五轮）：targetRatio 1.0 / 0.7 / 0.55 / 0.5 → LOD_100 / LOD_70 / LOD_55 / LOD_50。
+// 放弃「LOD25/10」名不副实的档位：质量守卫（sliver/拓扑/翻转/突起+cap）把减面地板抬到 ≈33493
+// （>27114），LOD55/50 名义比例低于地板 → 贴地板（HUD 显示「已到保护下限」）。
 const LODS = [
     { name: 'LOD_100', label: 'LOD 100%', targetRatio: 1.0 },
+    { name: 'LOD_70', label: 'LOD 70%', targetRatio: 0.7 },
+    { name: 'LOD_55', label: 'LOD 55%', targetRatio: 0.55 },
     { name: 'LOD_50', label: 'LOD 50%', targetRatio: 0.5 },
-    { name: 'LOD_25', label: 'LOD 25%', targetRatio: 0.25 },
-    { name: 'LOD_10', label: 'LOD 10%', targetRatio: 0.1 },
 ];
 
 function runReduce(lod) {

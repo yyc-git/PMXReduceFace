@@ -1,7 +1,9 @@
 // 指尖突起面专项检测：对比原始 vs 输出，找「突出/翘起」的三角形
 // 突起定义：三角形顶点到邻接三角形平面的最大距离（相对手指局部尺度）
 // 手指区域：|x|>8.0, 13.8<y<15.0（指尖/小指无名指头）
+// 度量单一来源：qem.mjs 的 maxProtrudeOfVerts（「顶点到 1-ring 邻接面最大距离」，第五轮统一口径）
 import { loadPmx } from '../src/tool/lib/pmx-loader.mjs';
+import { maxProtrudeOfVerts, buildEdgeTris } from '../src/tool/pmx-face-reduce/qem.mjs';
 
 const [inPath, outPath] = process.argv.slice(2);
 if (!inPath || !outPath) { console.error('usage: node scripts/diag-fingertip.mjs <in.pmx> <out.pmx>'); process.exit(1); }
@@ -13,6 +15,9 @@ const out = load(outPath);
 const vp = (m, i) => m.vertices[i].position;
 const tri = (m, i) => m.faces[i].indices;
 const isFingertip = (c) => Math.abs(c[0]) > 8.0 && c[1] > 13.8 && c[1] < 15.0;
+
+const toPos = (m) => m.vertices.map((v) => v.position);
+const toTris = (m) => m.faces.map((f) => f.indices);
 
 function triInfo(m, ti) {
   const [a, b, c] = tri(m, ti);
@@ -30,38 +35,22 @@ function triInfo(m, ti) {
   return { ti, area, aspect: minL > 1e-12 ? maxL/minL : Infinity, maxL, centroid, n: [nx/nl, ny/nl, nz/nl], verts: [p0, p1, p2] };
 }
 
-function buildEdgeTris(m) {
-  const edgeMap = new Map();
-  for (let ti = 0; ti < m.faces.length; ti++) {
-    const [a, b, c] = tri(m, ti);
-    for (const [x, y] of [[a,b],[b,c],[c,a]]) {
-      const k = x < y ? `${x}:${y}` : `${y}:${x}`;
-      if (!edgeMap.has(k)) edgeMap.set(k, []);
-      edgeMap.get(k).push(ti);
-    }
-  }
-  return edgeMap;
-}
-
-// 顶点到平面距离
-function ptPlaneDist(p, n, q) {
-  return Math.abs((p[0]-q[0])*n[0] + (p[1]-q[1])*n[1] + (p[2]-q[2])*n[2]);
-}
-
-function analyze(m, label, edgeMap) {
+function analyze(m, label) {
+  const positions = toPos(m);
+  const tris = toTris(m);
+  const edgeMap = buildEdgeTris(tris);
   const rows = [];
   for (let ti = 0; ti < m.faces.length; ti++) {
     const info = triInfo(m, ti);
     if (!isFingertip(info.centroid)) continue;
+    info.maxProtrude = maxProtrudeOfVerts(positions, tris, ti, edgeMap);
+    // 最大邻接法线夹角
     const [a, b, c] = tri(m, ti);
-    // 邻接三角形
     const nbs = new Set();
     for (const [x, y] of [[a,b],[b,c],[c,a]]) {
       const k = x < y ? `${x}:${y}` : `${y}:${x}`;
       for (const tj of edgeMap.get(k) || []) if (tj !== ti) nbs.add(tj);
     }
-    if (nbs.size === 0) { rows.push({...info, maxProtrude: 0, maxAngle: 0, nbs: 0}); continue; }
-    // 最大邻接法线夹角
     let maxAngle = 0;
     for (const tj of nbs) {
       const nn = triInfo(m, tj).n;
@@ -69,30 +58,19 @@ function analyze(m, label, edgeMap) {
       const ang = Math.acos(dot) * 180 / Math.PI;
       if (ang > maxAngle) maxAngle = ang;
     }
-    // 突起度：每个顶点到各邻接平面的最大距离
-    let maxProtrude = 0;
-    for (const tj of nbs) {
-      const nj = triInfo(m, tj);
-      const q = nj.verts[0];
-      for (const p of info.verts) {
-        const d = ptPlaneDist(p, nj.n, q);
-        if (d > maxProtrude) maxProtrude = d;
-      }
-    }
-    rows.push({...info, maxProtrude, maxAngle, nbs: nbs.size});
+    info.maxAngle = maxAngle;
+    info.nbs = nbs.size;
+    rows.push(info);
   }
   console.log(`\n===== ${label}: 指尖区域 ${rows.length} 个三角形 =====`);
-  // 统计突起度分布
   const prot = rows.map(r => r.maxProtrude).sort((a,b)=>a-b);
   const p90 = prot[Math.floor(prot.length*0.9)];
   console.log(`突起度: p50=${prot[Math.floor(prot.length*0.5)].toFixed(4)} p90=${p90.toFixed(4)} max=${prot[prot.length-1].toFixed(4)}`);
-  // 大突起（>0.08，手指直径 0.3-0.5 的 ~20%）
   const big = rows.filter(r => r.maxProtrude > 0.08);
   console.log(`突起>0.08: ${big.length} 个`);
   for (const r of big.sort((a,b)=>b.maxProtrude-a.maxProtrude).slice(0, 25)) {
     console.log(`  tri#${r.ti} protrude=${r.maxProtrude.toFixed(3)} angle=${r.maxAngle.toFixed(0)}° area=${r.area.toFixed(4)} aspect=${r.aspect.toFixed(1)} maxL=${r.maxL.toFixed(3)} @[${r.centroid.map(v=>v.toFixed(2)).join(',')}]`);
   }
-  // 大翻转（>120°）
   const flip = rows.filter(r => r.maxAngle > 120);
   console.log(`法线夹角>120°: ${flip.length} 个`);
   for (const r of flip.sort((a,b)=>b.maxAngle-a.maxAngle).slice(0, 25)) {
@@ -101,12 +79,9 @@ function analyze(m, label, edgeMap) {
   return rows;
 }
 
-const oe = buildEdgeTris(orig);
-const ox = buildEdgeTris(out);
-const origRows = analyze(orig, '原始模型', oe);
-const outRows = analyze(out, '输出 LOD', ox);
+const origRows = analyze(orig, '原始模型');
+const outRows = analyze(out, '输出 LOD');
 
-// 汇总对比
 const bigO = origRows.filter(r => r.maxProtrude > 0.08).length;
 const bigX = outRows.filter(r => r.maxProtrude > 0.08).length;
 const flipO = origRows.filter(r => r.maxAngle > 120).length;

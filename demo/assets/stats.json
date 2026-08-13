@@ -1,7 +1,7 @@
 {
   "model": "XiaoMeiOriginFix_02_elrein",
   "file": "XiaoMeiOriginFix_02_elrein.pmx",
-  "generatedAt": "2026-08-13T05:37:48.604Z",
+  "generatedAt": "2026-08-13T07:51:32.875Z",
   "generator": "scripts/prepare-demo.mjs → reduce.mjs",
   "original": {
     "vertices": 34394,
@@ -60,20 +60,73 @@
           "newTri": 688
         }
       ],
-      "durationMs": 1348
+      "durationMs": 1337
     },
     {
-      "name": "LOD_50",
-      "label": "LOD 50%",
-      "targetRatio": 0.5,
-      "file": "XiaoMeiOriginFix_02_elrein.LOD50.pmx",
-      "vertices": 20011,
-      "triangles": 27113,
+      "name": "LOD_70",
+      "label": "LOD 70%",
+      "targetRatio": 0.7,
+      "file": "XiaoMeiOriginFix_02_elrein.LOD70.pmx",
+      "vertices": 25635,
+      "triangles": 37955,
       "originalVertices": 34394,
       "originalTriangles": 54228,
-      "targetTriangles": 27114,
+      "targetTriangles": 37960,
       "materials": 6,
-      "reductionRatio": 50.00184406579626,
+      "reductionRatio": 30.008482702662832,
+      "reductionMet": true,
+      "perMaterial": [
+        {
+          "index": 0,
+          "name": "2000_Alpha",
+          "origTri": 4279,
+          "newTri": 1393
+        },
+        {
+          "index": 1,
+          "name": "2000_Body",
+          "origTri": 7222,
+          "newTri": 5691
+        },
+        {
+          "index": 2,
+          "name": "2000_Body all",
+          "origTri": 21718,
+          "newTri": 12884
+        },
+        {
+          "index": 3,
+          "name": "2000_BurumaSet_Liltoon",
+          "origTri": 11116,
+          "newTri": 9587
+        },
+        {
+          "index": 4,
+          "name": "2000_Hair",
+          "origTri": 9205,
+          "newTri": 7840
+        },
+        {
+          "index": 5,
+          "name": "尾巴",
+          "origTri": 688,
+          "newTri": 560
+        }
+      ],
+      "durationMs": 2744
+    },
+    {
+      "name": "LOD_55",
+      "label": "LOD 55%",
+      "targetRatio": 0.55,
+      "file": "XiaoMeiOriginFix_02_elrein.LOD55.pmx",
+      "vertices": 21435,
+      "triangles": 29822,
+      "originalVertices": 34394,
+      "originalTriangles": 54228,
+      "targetTriangles": 29826,
+      "materials": 6,
+      "reductionRatio": 45.00626982370731,
       "reductionMet": true,
       "perMaterial": [
         {
@@ -86,25 +139,78 @@
           "index": 1,
           "name": "2000_Body",
           "origTri": 7222,
-          "newTri": 4924
+          "newTri": 5091
         },
         {
           "index": 2,
           "name": "2000_Body all",
           "origTri": 21718,
-          "newTri": 8101
+          "newTri": 9259
         },
         {
           "index": 3,
           "name": "2000_BurumaSet_Liltoon",
           "origTri": 11116,
-          "newTri": 6721
+          "newTri": 7407
         },
         {
           "index": 4,
           "name": "2000_Hair",
           "origTri": 9205,
-          "newTri": 5734
+          "newTri": 6396
+        },
+        {
+          "index": 5,
+          "name": "尾巴",
+          "origTri": 688,
+          "newTri": 386
+        }
+      ],
+      "durationMs": 3406
+    },
+    {
+      "name": "LOD_50",
+      "label": "LOD 50%",
+      "targetRatio": 0.5,
+      "file": "XiaoMeiOriginFix_02_elrein.LOD50.pmx",
+      "vertices": 20025,
+      "triangles": 27110,
+      "originalVertices": 34394,
+      "originalTriangles": 54228,
+      "targetTriangles": 27114,
+      "materials": 6,
+      "reductionRatio": 50.00737626318508,
+      "reductionMet": true,
+      "perMaterial": [
+        {
+          "index": 0,
+          "name": "2000_Alpha",
+          "origTri": 4279,
+          "newTri": 1283
+        },
+        {
+          "index": 1,
+          "name": "2000_Body",
+          "origTri": 7222,
+          "newTri": 4935
+        },
+        {
+          "index": 2,
+          "name": "2000_Body all",
+          "origTri": 21718,
+          "newTri": 8097
+        },
+        {
+          "index": 3,
+          "name": "2000_BurumaSet_Liltoon",
+          "origTri": 11116,
+          "newTri": 6717
+        },
+        {
+          "index": 4,
+          "name": "2000_Hair",
+          "origTri": 9205,
+          "newTri": 5728
         },
         {
           "index": 5,
@@ -113,113 +219,7 @@
           "newTri": 350
         }
       ],
-      "durationMs": 4088
-    },
-    {
-      "name": "LOD_25",
-      "label": "LOD 25%",
-      "targetRatio": 0.25,
-      "file": "XiaoMeiOriginFix_02_elrein.LOD25.pmx",
-      "vertices": 19477,
-      "triangles": 26082,
-      "originalVertices": 34394,
-      "originalTriangles": 54228,
-      "targetTriangles": 13557,
-      "materials": 6,
-      "reductionRatio": 51.903075901748174,
-      "reductionMet": false,
-      "perMaterial": [
-        {
-          "index": 0,
-          "name": "2000_Alpha",
-          "origTri": 4279,
-          "newTri": 1283
-        },
-        {
-          "index": 1,
-          "name": "2000_Body",
-          "origTri": 7222,
-          "newTri": 4830
-        },
-        {
-          "index": 2,
-          "name": "2000_Body all",
-          "origTri": 21718,
-          "newTri": 7665
-        },
-        {
-          "index": 3,
-          "name": "2000_BurumaSet_Liltoon",
-          "origTri": 11116,
-          "newTri": 6567
-        },
-        {
-          "index": 4,
-          "name": "2000_Hair",
-          "origTri": 9205,
-          "newTri": 5407
-        },
-        {
-          "index": 5,
-          "name": "尾巴",
-          "origTri": 688,
-          "newTri": 330
-        }
-      ],
-      "durationMs": 4390
-    },
-    {
-      "name": "LOD_10",
-      "label": "LOD 10%",
-      "targetRatio": 0.1,
-      "file": "XiaoMeiOriginFix_02_elrein.LOD10.pmx",
-      "vertices": 19477,
-      "triangles": 26082,
-      "originalVertices": 34394,
-      "originalTriangles": 54228,
-      "targetTriangles": 5423,
-      "materials": 6,
-      "reductionRatio": 51.903075901748174,
-      "reductionMet": false,
-      "perMaterial": [
-        {
-          "index": 0,
-          "name": "2000_Alpha",
-          "origTri": 4279,
-          "newTri": 1283
-        },
-        {
-          "index": 1,
-          "name": "2000_Body",
-          "origTri": 7222,
-          "newTri": 4830
-        },
-        {
-          "index": 2,
-          "name": "2000_Body all",
-          "origTri": 21718,
-          "newTri": 7665
-        },
-        {
-          "index": 3,
-          "name": "2000_BurumaSet_Liltoon",
-          "origTri": 11116,
-          "newTri": 6567
-        },
-        {
-          "index": 4,
-          "name": "2000_Hair",
-          "origTri": 9205,
-          "newTri": 5407
-        },
-        {
-          "index": 5,
-          "name": "尾巴",
-          "origTri": 688,
-          "newTri": 330
-        }
-      ],
-      "durationMs": 4323
+      "durationMs": 3838
     }
   ]
 }
