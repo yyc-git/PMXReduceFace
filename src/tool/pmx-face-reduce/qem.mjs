@@ -72,12 +72,18 @@ export const HOLE_TOL = 0.2;
 // 圆管 seg24(15°)/细管(22.5°) 也被门控，BDD 管状 fixture 实测目标仍可达（29/29 全绿）。
 // 若校准发现 12° 太紧/太松，按 §2.4 方向在 [8, 20] 区间调整并重跑验证矩阵。
 export const CURV_MIN_DEG = 12;
-// MAXL_COEF：许可 maxL = 系数 × 顶点局部输入 maxL p95。屁股 p95 0.49 → 许可 0.73，输出巨型 1.7-1.9 必拒；
-// 若 LOD50 输出 maxL p90 仍 > 0.622（断言线），降到 1.2-1.3（§2.4）。
-export const MAXL_COEF = 1.5;
-// AREA_COEF：许可面积 = 系数 × 顶点局部输入面积 p95。屁股 p95 0.043 → 许可 0.056，巨型 0.27-0.34 必拒；
-// 指尖 p95 0.012 → 许可 0.0156 < 鼓包 0.0262 必拒。与「面积 p99 ≤ 1.5×」断言线联调（§2.4）。
-export const AREA_COEF = 1.3;
+// MAXL_COEF：许可 maxL = 系数 × 顶点局部输入 maxL p95。定稿校准（fix6 校准扫描最优组合，实测
+// LOD50 地板 ≈39949、质量断言 6 项全绿）：2.0 在「封住跨曲面合并（fix5 444 个弯曲面新超尺寸 → 0）」
+// 与「尽量压低地板」之间取平衡；1.5 时地板更高（41237），1.8/2.0 时地板降到 ≈39949 且质量仍绿。
+export const MAXL_COEF = 2.0;
+// AREA_COEF：许可面积 = 系数 × 顶点局部输入面积 p95。定稿校准 1.5（与 MAXL_COEF 2.0 配套，实测
+// LOD50 地板 ≈39949、质量断言全绿）。
+export const AREA_COEF = 1.5;
+// P1 大鼓包面积系数（非导出，定稿校准 1.4）：突起大鼓包条件的面积许可独立于尺寸守卫 AREA_COEF。
+// 校准扫描最优组合为 MAXL=2.0 / size-AREA=1.5 / big-bump=1.4（实测 39949 面、质量全绿）；若让
+// big-bump 复用 AREA_COEF=1.5，实测质量变红（area p99 0.1173 > 1.5×0.0768、跨曲面新超尺寸 3 个，
+// 胸部 x≈-1.3/y≈16.5/z≈3.5 处 nbrAngle 94°-106°），故保留独立内部常量（P1 解耦实验的定稿值）。
+const P1_BIG_BUMP_AREA_COEF = 1.4;
 // 全局下限（兜底）：预算为空的顶点（无有效邻接输入三角形）不得被「0 预算」误杀。
 // floorL = MAXL_FLOOR_RATIO × medE（真模型 medE≈0.13 → 0.13；grid fixture medE≈1.0 → 1.0 自动放大）；
 // floorA = AREA_FLOOR_RATIO × medE²（真模型 → 0.0085，低于局部 p95 一般不生效）。若诊断发现 floor
@@ -1284,7 +1290,7 @@ export function collapseMesh({
         // 第五轮预算 cap 机制保留（protrudeCapValue 可传 protrudeCap(medE)），但生产路径默认 Infinity
         // （实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133 > 输入 0.0983，且无真洞收益）。
         // 第六轮 P1 大鼓包条件（传入 sizeA）：突起超基础阈值且面积超局部预算的大三角形 → 拒绝。
-        if (collapseProtrudes(positions, tris, aliveT, vTris, u, v, pos, protrudeMax, protrudeBudgets, protrudeCapValue, sizeA)) { e.dead = true; stats.rejected++; stats.protrudeRejects++; return; }
+        if (collapseProtrudes(positions, tris, aliveT, vTris, u, v, pos, protrudeMax, protrudeBudgets, protrudeCapValue, sizeA, P1_BIG_BUMP_AREA_COEF, 0)) { e.dead = true; stats.rejected++; stats.protrudeRejects++; return; }
 
         // 曲率感知三角形尺寸守卫（第六轮 P0）：折叠后受影响三角形超「相对局部输入分布的尺寸上限」
         // （曲率门控，maxL/面积双轴）→ 拒绝。QEM 对跨曲率合并失明（球面相邻小三角几乎共面 → 免费合并
