@@ -89,7 +89,7 @@ npx pmx-reduce-face-verify in.pmx out.pmx --target-ratio 0.5
 
 > ⚠️ **verify 的锁定参数必须与 reduce 一致**：若 reduce 用了 `--lock-morph false` / `--lock-seams false`，verify 必须传相同参数，否则「morph/接缝顶点锁定」断言会按默认锁定集校验而误报（此时锁定顶点位置断言不适用）。
 
-> ⚠️ **`--target-tri` 与保护下限**：`--min-retention`、小材质锁定 + 细长条 sliver / 拓扑 / 翻转 / 突起 / 曲率感知尺寸守卫合计出一个「保底三角形数」，任何减面都不会低于它。若 `--target-tri` 低于保底，减面会在保底处停下 —— 工具不报错，但 `newTriangles > target` → 统计里的 `reductionMet=false`，`verify` 的 `triWithinTarget=false`（第六轮起 verify 的 `ok` 不再计入该检查，质量优先）。选目标时请让 `--target-tri ≥ 保底`（第六轮实测 demo 模型保底约 **41237** 面：质量守卫（含新的曲率感知尺寸守卫）把减面地板抬到 41237，`--target-ratio 0.5/0.55/0.7` 名义目标均低于保底 → 贴地板、reductionMet=false，属预期「质量优先」。第五轮曾试行「突起预算 cap」，实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133 > 输入 0.0983，故默认不启用，cap 仅保留为单元测试能力）。
+> ⚠️ **`--target-tri` 与保护下限**：`--min-retention`、小材质锁定 + 细长条 sliver / 拓扑 / 翻转 / 突起 / 曲率感知尺寸守卫合计出一个「保底三角形数」，任何减面都不会低于它。若 `--target-tri` 低于保底，减面会在保底处停下 —— 工具不报错，但 `newTriangles > target` → 统计里的 `reductionMet=false`，`verify` 的 `triWithinTarget=false`（第六轮起 verify 的 `ok` 不再计入该检查，质量优先）。选目标时请让 `--target-tri ≥ 保底`（第六轮定稿实测 demo 模型保底约 **39949** 面：质量守卫（含新的曲率感知尺寸守卫）把减面地板抬到 39949，`--target-ratio 0.5/0.55/0.7` 名义目标均低于保底 → 贴地板、reductionMet=false，属预期「质量优先」。第五轮曾试行「突起预算 cap」，实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133 > 输入 0.0983，故默认不启用，cap 仅保留为单元测试能力）。
 
 ## 🔬 核心 API
 
@@ -203,17 +203,17 @@ yarn webpack:dev-server    # 启动 dev-server → http://localhost:8096（demo/
 | LOD | 顶点数 | 三角形数 | 减面率 |
 |-----|--------|----------|--------|
 | LOD 100%（原版） | 34,394 | 54,228 | — |
-| LOD 70% | 27,134 | 41,237 | 23.96% |
-| LOD 55% | 27,134 | 41,237 | 23.96% |
-| LOD 50% | 27,134 | 41,237 | 23.96% |
+| LOD 70% | 26,473 | 39,949 | 26.33% |
+| LOD 55% | 26,473 | 39,949 | 26.33% |
+| LOD 50% | 26,473 | 39,949 | 26.33% |
 
-> 第六轮起 50%/55%/70% 三档均贴质量保底（≈41237，reductionMet=false）：新增的曲率感知尺寸守卫把减面地板从 fix5 的 27110 抬到 41237 —— 袜子/内裤屁股等球面区不再跨曲面合并大平面（fix5 输出 444 个跨曲面新超尺寸 → 第六轮 0）。属「质量优先、面数不一定要降很低」的拍板结果。第五轮曾试行「突起预算 cap」收紧下限，实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133（> 输入 0.0983），故默认不启用 cap；第六轮指尖突起面 8 ≤ 输入 8、最大面积 0.0182 ≤ 输入 0.0182（圆锥体消失）。
+> 第六轮起 50%/55%/70% 三档均贴质量保底（≈39949，reductionMet=false）：新增的曲率感知尺寸守卫把减面地板从 fix5 的 27110 抬到 39949 —— 袜子/内裤屁股等球面区不再跨曲面合并大平面（fix5 输出 444 个跨曲面新超尺寸 → 第六轮 0）。属「质量优先、面数不一定要降很低」的拍板结果。第五轮曾试行「突起预算 cap」收紧下限，实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133（> 输入 0.0983），故默认不启用 cap；第六轮指尖突起面 8 ≤ 输入 8、最大面积 0.0182 ≤ 输入 0.0182（圆锥体消失）。
 
 **质量指标（第六轮，`yarn test:real` 断言，阈值运行时实测）**：
 
 | 检查项 | 输入实测 | fix5 LOD50 | fix6 LOD50 | 断言线 |
 |---|---|---|---|---|
-| BurumaSet 面积 p99 | 0.078 | 0.156 | **0.109** | ≤ 1.5×（0.115） |
+| BurumaSet 面积 p99 | 0.078 | 0.156 | **0.112** | ≤ 1.5×（0.115） |
 | BurumaSet maxL p90 | 0.415 | 0.636 | **0.438** | ≤ 1.5×（0.623） |
 | 指尖突起面数量 | 8 | 6 | **8** | ≤ 输入 |
 | 指尖突起面最大面积 | 0.0182 | 0.0262 | **0.0182** | ≤ 输入 |
@@ -221,7 +221,7 @@ yarn webpack:dev-server    # 启动 dev-server → http://localhost:8096（demo/
 | 非流形边 | — | 0 | **0** | = 0 |
 | 袜区新增洞（tol 0.2） | — | 0 | **0** | ≤ 1 |
 
-> 注：面积 p99 断言线校准到 1.5×（fix6-plan §2.4 原定 1.3×）：输入 BurumaSet 本身含 100 个面积 > 0.0998 的固有巨型三角形（实测，fix6-plan §1.2「输入该形态≈0」判断有误），深度减面后这些保留巨型的百分位前移，1.3× 实测不可达；1.5× 分界清晰（fix5 0.156 RED / fix6 0.109 GREEN）。「跨曲面新增超尺寸」只计新三角形所在输出表面曲率 > 20° 的（平坦区新大三角形视觉无害，fix6 实测 56 个新超尺寸全在平坦区）。
+> 注：面积 p99 断言线校准到 1.5×（fix6-plan §2.4 原定 1.3×）：输入 BurumaSet 本身含 100 个面积 > 0.0998 的固有巨型三角形（实测，fix6-plan §1.2「输入该形态≈0」判断有误），深度减面后这些保留巨型的百分位前移，1.3× 实测不可达；1.5× 分界清晰（fix5 0.156 RED / fix6 0.112 GREEN）。「跨曲面新增超尺寸」只计新三角形所在输出表面曲率 > 20° 的（平坦区新大三角形视觉无害，fix6 实测 50 个新超尺寸全在平坦区）。守卫系数定稿：MAXL_COEF=2.0 / AREA_COEF=1.5 / CURV_MIN_DEG=12 / 大鼓包面积系数=1.4（校准扫描最优组合，实测 39949 面质量全绿）。
 
 - Demo 统计源：`demo/assets/stats.json`（`yarn demo:prepare` 生成）；缺失时 HUD 回退到页面内实时解析 mesh 几何。
 - 模型 + 纹理：`demo/assets/XiaoMeiOriginFix_02_elrein.pmx` + `demo/assets/tex/`（pmx 与 tex 同目录，纹理相对路径自动解析）。
@@ -377,7 +377,7 @@ npx pmx-reduce-face-verify in.pmx out.pmx --target-ratio 0.5
 
 > ⚠️ **verify's lock flags must match reduce**: if reduce ran with `--lock-morph false` / `--lock-seams false`, verify must be given the same flags, otherwise the "morph/seam locked vertices" assertions validate against the default locked set and report false failures (the locked-position assertion doesn't apply then).
 
-> ⚠️ **`--target-tri` vs the protection floor**: `--min-retention`, small-material locking, plus the sliver/topology/fold-over/protrude/size guards add up to a minimum triangle count that no reduction goes below. If `--target-tri` is below that floor, reduction stops at the floor — the tool does not error, but `newTriangles > target` → `reductionMet=false` in the stats and `triWithinTarget=false` in verify (from round 6, verify's `ok` no longer counts this check — quality first). Pick `--target-tri ≥ floor` (the demo model's floor is ≈ **41,237** in round 6: the new curvature-aware size guard raises the decimation floor from fix5's 27,110, so `--target-ratio 0.5/0.55/0.7` all floor out with `reductionMet=false`, which is the expected "quality first" result). Round 5 trialed a protrude-budget cap; the global cap changed the fold order and worsened the residual fingertip plane to 0.133 (> input 0.0983), so the cap is off by default (kept only as a unit-test capability).
+> ⚠️ **`--target-tri` vs the protection floor**: `--min-retention`, small-material locking, plus the sliver/topology/fold-over/protrude/size guards add up to a minimum triangle count that no reduction goes below. If `--target-tri` is below that floor, reduction stops at the floor — the tool does not error, but `newTriangles > target` → `reductionMet=false` in the stats and `triWithinTarget=false` in verify (from round 6, verify's `ok` no longer counts this check — quality first). Pick `--target-tri ≥ floor` (the demo model's floor is ≈ **39,949** in round 6: the new curvature-aware size guard raises the decimation floor from fix5's 27,110, so `--target-ratio 0.5/0.55/0.7` all floor out with `reductionMet=false`, which is the expected "quality first" result). Round 5 trialed a protrude-budget cap; the global cap changed the fold order and worsened the residual fingertip plane to 0.133 (> input 0.0983), so the cap is off by default (kept only as a unit-test capability).
 
 ## 🔬 Core API
 
@@ -491,17 +491,17 @@ Open `http://localhost:8096` and switch LOD levels via the bottom bar:
 | LOD | Vertices | Triangles | Reduction |
 |-----|----------|-----------|-----------|
 | LOD 100%（original） | 34,394 | 54,228 | — |
-| LOD 70% | 27,134 | 41,237 | 23.96% |
-| LOD 55% | 27,134 | 41,237 | 23.96% |
-| LOD 50% | 27,134 | 41,237 | 23.96% |
+| LOD 70% | 26,473 | 39,949 | 26.33% |
+| LOD 55% | 26,473 | 39,949 | 26.33% |
+| LOD 50% | 26,473 | 39,949 | 26.33% |
 
-> Since round 6 the 50%/55%/70% levels all sit at the quality floor (≈41,237, `reductionMet=false`): the new curvature-aware size guard raises the decimation floor from fix5's 27,110 to 41,237 — spherical regions like the sock/underwear buttocks no longer merge into cross-surface planes (fix5 output had 444 curved-surface new oversize triangles; round 6 has 0). This is the agreed "quality first — faces don't have to go very low, but broken/popping surfaces are unacceptable" result. Round 5 trialed a protrude-budget cap to tighten the floor; the global cap changed the fold order and worsened the residual fingertip plane to 0.133 (> input 0.0983), so the cap is off by default; in round 6 the fingertip shows 8 protruding faces ≤ input 8 and max protruding-face area 0.0182 ≤ input 0.0182 (the fingertip cone is gone).
+> Since round 6 the 50%/55%/70% levels all sit at the quality floor (≈39,949, `reductionMet=false`): the new curvature-aware size guard raises the decimation floor from fix5's 27,110 to 39,949 — spherical regions like the sock/underwear buttocks no longer merge into cross-surface planes (fix5 output had 444 curved-surface new oversize triangles; round 6 has 0). This is the agreed "quality first — faces don't have to go very low, but broken/popping surfaces are unacceptable" result. Round 5 trialed a protrude-budget cap to tighten the floor; the global cap changed the fold order and worsened the residual fingertip plane to 0.133 (> input 0.0983), so the cap is off by default; in round 6 the fingertip shows 8 protruding faces ≤ input 8 and max protruding-face area 0.0182 ≤ input 0.0182 (the fingertip cone is gone).
 
 **Quality metrics (round 6, asserted by `yarn test:real`, thresholds measured at runtime from the input)**:
 
 | Check | Input (measured) | fix5 LOD50 | fix6 LOD50 | Assertion |
 |---|---|---|---|---|
-| BurumaSet area p99 | 0.078 | 0.156 | **0.109** | ≤ 1.5× (0.115) |
+| BurumaSet area p99 | 0.078 | 0.156 | **0.112** | ≤ 1.5× (0.115) |
 | BurumaSet maxL p90 | 0.415 | 0.636 | **0.438** | ≤ 1.5× (0.623) |
 | Fingertip protrude faces count | 8 | 6 | **8** | ≤ input |
 | Fingertip protrude faces max area | 0.0182 | 0.0262 | **0.0182** | ≤ input |
@@ -509,7 +509,7 @@ Open `http://localhost:8096` and switch LOD levels via the bottom bar:
 | Non-manifold edges | — | 0 | **0** | = 0 |
 | New sock-region holes (tol 0.2) | — | 0 | **0** | ≤ 1 |
 
-> The area-p99 assertion coefficient is calibrated to 1.5× (fix6-plan §2.4 originally proposed 1.3×): the input BurumaSet itself contains 100 inherent giant triangles with area > 0.0998 (measured; the plan's "input has ≈0 of this form" claim was wrong), and after deep decimation these retained giants move to higher percentiles, making 1.3× unreachable. 1.5× separates cleanly (fix5 0.156 RED / fix6 0.109 GREEN). "Curved-surface new oversize" only counts new triangles whose output surface curvature exceeds 20° (flat-region new large triangles are visually harmless — fix6's 56 new oversize are all on flat surfaces).
+> The area-p99 assertion coefficient is calibrated to 1.5× (fix6-plan §2.4 originally proposed 1.3×): the input BurumaSet itself contains 100 inherent giant triangles with area > 0.0998 (measured; the plan's "input has ≈0 of this form" claim was wrong), and after deep decimation these retained giants move to higher percentiles, making 1.3× unreachable. 1.5× separates cleanly (fix5 0.156 RED / fix6 0.112 GREEN). "Curved-surface new oversize" only counts new triangles whose output surface curvature exceeds 20° (flat-region new large triangles are visually harmless — fix6's 50 new oversize are all on flat surfaces). Final guard coefficients: MAXL_COEF=2.0 / AREA_COEF=1.5 / CURV_MIN_DEG=12 / big-bump area coefficient=1.4 (calibration-scan optimal, measured 39,949 faces with quality all green).
 
 - Stats source: `demo/assets/stats.json` (generated by `yarn demo:prepare`); the HUD falls back to live mesh geometry parsing when it's missing.
 - Model + textures: `demo/assets/XiaoMeiOriginFix_02_elrein.pmx` + `demo/assets/tex/` (the pmx and tex share a directory, so relative texture paths resolve automatically).
