@@ -165,6 +165,7 @@ export function reduceFaces({
         holeRejects: stats.holeRejects,
         foldOverRejects: stats.foldOverRejects,
         protrudeRejects: stats.protrudeRejects,
+        sizeRejects: stats.sizeRejects,
         materialRejects: stats.materialRejects,
         newHoleEdges: stats.newHoleEdges,
         durationMs: Date.now() - t0,

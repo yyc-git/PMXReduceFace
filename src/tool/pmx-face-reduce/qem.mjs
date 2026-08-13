@@ -59,6 +59,36 @@ export function protrudeCap(medE) {
 // 让洞保护与折叠顺序解耦的兜底：折叠顺序再变，最终输出也保证无洞。
 export const HOLE_TOL = 0.2;
 
+// 曲率感知三角形尺寸守卫（第六轮 P0）常量。全部基于 fix5 产物实测校准（docs/fix6-plan.md §1/§2.4）：
+// - 屁股球面（BurumaSet 袜子/内裤，球半径≈1）局部输入 maxL p95≈0.49 / 面积 p95≈0.043，QEM 把 4-8 个
+//   小三角免费合并成跨曲面大平面 → 视觉破面（实测 fix6 输出零跨曲面新超尺寸 = 已消除）；
+// - 指尖穹面（半径≈0.3）局部 maxL p95≈0.19-0.24 / 面积 p95≈0.012，鼓包 tri 0.0262/0.301 跨穹面；
+// - 合成网格 fixture（cell 1.0 高度场）p95≈4.8°、圆管 seg24 p95≈15°、细管 seg16 p95≈22.5°。
+// 曲率门控（CURV_MIN_DEG）：只对局部曲率超过该角度的三角形生效，平坦区（合成 fixture/大腿平面）
+// 不受限。真实模型校准（fix6-plan §8 步骤 5，实测数据）：袜子区顶点曲率 p50≈16°/p75≈27°、
+// 大腿 p50≈16°、屁股 p50≈13°；网格 fixture p95 仅 4.8°（2% 顶点 ≥12°，接缝/高度场尖点，不阻塞
+// 50% 减面目标）。CURV_MIN_DEG=12 在「拦截真实模型跨曲面合并（fix5 实测 444 个 >20° 弯曲面新超尺寸，
+// fix6 降到 0）」与「放行平坦区合法合并（56 个新超尺寸全在平坦区，视觉无害）」之间取平衡；12° 时
+// 圆管 seg24(15°)/细管(22.5°) 也被门控，BDD 管状 fixture 实测目标仍可达（29/29 全绿）。
+// 若校准发现 12° 太紧/太松，按 §2.4 方向在 [8, 20] 区间调整并重跑验证矩阵。
+export const CURV_MIN_DEG = 12;
+// MAXL_COEF：许可 maxL = 系数 × 顶点局部输入 maxL p95。屁股 p95 0.49 → 许可 0.73，输出巨型 1.7-1.9 必拒；
+// 若 LOD50 输出 maxL p90 仍 > 0.622（断言线），降到 1.2-1.3（§2.4）。
+export const MAXL_COEF = 1.5;
+// AREA_COEF：许可面积 = 系数 × 顶点局部输入面积 p95。屁股 p95 0.043 → 许可 0.056，巨型 0.27-0.34 必拒；
+// 指尖 p95 0.012 → 许可 0.0156 < 鼓包 0.0262 必拒。与「面积 p99 ≤ 1.5×」断言线联调（§2.4）。
+export const AREA_COEF = 1.3;
+// 全局下限（兜底）：预算为空的顶点（无有效邻接输入三角形）不得被「0 预算」误杀。
+// floorL = MAXL_FLOOR_RATIO × medE（真模型 medE≈0.13 → 0.13；grid fixture medE≈1.0 → 1.0 自动放大）；
+// floorA = AREA_FLOOR_RATIO × medE²（真模型 → 0.0085，低于局部 p95 一般不生效）。若诊断发现 floor
+// 主导了某曲率区，把 MAXL_FLOOR_RATIO 降到 0.6（§2.4 / §6 R5）。
+export const MAXL_FLOOR_RATIO = 1.0;
+export const AREA_FLOOR_RATIO = 0.5;
+// 局部尺寸预算的最小有效三角形面积：面积 < 该值（如双面微片/近退化片）被排除——垃圾法线虚报曲率、
+// 微尺寸污染预算。与 FLIP_LOCK_AREA 同值（1e-3，单一来源，见下）；指尖合法小三角面积 0.0073 ≥ 1e-3
+// 不被误排除。
+export const SIZE_BUDGET_MIN_AREA = 1e-3;
+
 /**
  * 点到线段最短距离平方（diag-holes.mjs 同口径）。供边界边空间包含校验复用。
  */
@@ -548,6 +578,25 @@ export function collapseFoldOver(positions, tris, aliveT, vTris, u, v, newPos) {
 }
 
 /**
+ * 折叠后受影响存活三角形的 post 几何（含 u 或 v、不同时含两者，v→u 重映射）。
+ * 突起守卫（collapseProtrudes / collapseProtrudeMax）与尺寸守卫（collapseCreatesOversizeTriangle）
+ * 共用同一实现，保证「守卫判定」口径一致（fix6-plan §2.5：受影响三角形折叠后几何枚举单一来源）。
+ * @returns {{ti:number, postIdx:number[], postVerts:number[][]}[]}
+ */
+function affectedPostTris(positions, tris, aliveT, vTris, u, v, newPos) {
+    const posOf = (i) => (i === u || i === v ? newPos : positions[i]);
+    const out = [];
+    for (const ti of vTris[u].concat(vTris[v])) {
+        if (!aliveT[ti]) continue;
+        const t = tris[ti];
+        if (t.includes(u) && t.includes(v)) continue; // 将被移除
+        const postIdx = t.map((i) => (i === v ? u : i));
+        out.push({ ti, postIdx, postVerts: postIdx.map(posOf) });
+    }
+    return out;
+}
+
+/**
  * 折叠后受影响存活三角形的突起值列表（post 几何）。collapseProtrudes 与 collapseProtrudeMax
  * 共用同一实现，保证「守卫判定」与「测试校准」口径一致。
  * 数学复用 maxProtrudeOfVerts（顶点到邻接平面距离），只是邻接平面取折叠后几何。
@@ -563,12 +612,9 @@ function affectedProtrudes(positions, tris, aliveT, vTris, u, v, newPos) {
     const newN = new Map(); // ti -> 折叠后法线（受影响存活三角形）
     const post = new Map(); // ti -> post-collapse 索引（v→u）
     const affected = [];
-    for (const ti of vTris[u].concat(vTris[v])) {
-        if (!aliveT[ti]) continue;
-        const t = tris[ti];
-        if (t.includes(u) && t.includes(v)) continue; // 将被移除
-        post.set(ti, t.map((i) => (i === v ? u : i)));
-        newN.set(ti, nrm(posOf(t[0]), posOf(t[1]), posOf(t[2])));
+    for (const { ti, postIdx, postVerts } of affectedPostTris(positions, tris, aliveT, vTris, u, v, newPos)) {
+        post.set(ti, postIdx);
+        newN.set(ti, nrm(postVerts[0], postVerts[1], postVerts[2]));
         affected.push(ti);
     }
     // 邻居平面：usePost=true（折叠后几何）时受影响三角形用 newN/post，否则（折叠前几何）全用当前位置/法线
@@ -612,7 +658,7 @@ function affectedProtrudes(positions, tris, aliveT, vTris, u, v, newPos) {
             if (tris[tj].includes(u) && tris[tj].includes(v)) nbs.delete(tj); // 将被移除，不是邻居
         }
         if (!nbs.size) continue;
-        out.push({ ti, newProtrude: maxProtrudeOf(postVerts, nbs) });
+        out.push({ ti, newProtrude: maxProtrudeOf(postVerts, nbs), postVerts });
     }
     return out;
 }
@@ -640,10 +686,13 @@ export function collapseProtrudeMax(positions, tris, aliveT, vTris, u, v, newPos
  * @param {number} [maxProtrude] 绝对/尺度归一化阈值下限（默认 PROTRUDE_MAX）
  * @param {Float64Array} [budgets] 每顶点原始突起预算（局部许可）；缺省 = 不启用预算
  * @param {number} [protrudeCap] 预算上限（protrudeCap(medE)，本模型 ≈0.078）；缺省 Infinity = 不封顶
+ * @param {Float64Array} [sizeA] 每顶点局部输入面积预算（P1 大鼓包条件，见下）；缺省 null = 不启用
+ * @param {number} [areaCoef] 大鼓包面积系数（默认 AREA_COEF）
+ * @param {number} [areaFloor] 大鼓包面积全局下限（默认 0）
  * @returns {boolean} true=存在会制造凸起的折叠（应拒绝）
  */
-export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, maxProtrude = PROTRUDE_MAX, budgets = null, protrudeCapValue = Infinity) {
-    for (const { ti, newProtrude } of affectedProtrudes(positions, tris, aliveT, vTris, u, v, newPos)) {
+export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, maxProtrude = PROTRUDE_MAX, budgets = null, protrudeCapValue = Infinity, sizeA = null, areaCoef = AREA_COEF, areaFloor = 0) {
+    for (const { ti, newProtrude, postVerts } of affectedProtrudes(positions, tris, aliveT, vTris, u, v, newPos)) {
         // 局部许可（local allowance）：绝对阈值 与 受影响三角形顶点的原始突起预算（随折叠累积）取大。
         // 预算固定取自输入几何 → 高曲率区（原始就凸）许可高、指尖近共面微三角团（原始平）许可低，
         // 既拦住「免费合并成跨曲面大平面」（突起 0.08~0.184 >> 预算 0.03），又不误杀高曲率区正常简化。
@@ -660,6 +709,21 @@ export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, 
               )
             : maxProtrude;
         if (newProtrude > allowance) return true;
+        // 大鼓包条件（第六轮 P1）：突起超过「基础阈值」且三角形面积超过「局部输入面积预算 × 系数」
+        // → 拒绝（大 + 鼓 = 圆锥体）。语义：小三角形（≤ 局部面积预算）保留预算许可（高曲率区合法
+        // 微凸起不误杀）；大三角形（> 局部面积预算）的突起不得超过基础阈值。指尖鼓包 tri#10122
+        // （protrude 0.088 > 0.066 且 area 0.0262 > AREA_COEF×0.012=0.0156）被拒；正常高曲率小三角
+        // 折叠（面积 ≤ 预算）不受影响。传 sizeA=null（旧调用）时该条件完全关闭 → 向后兼容。
+        if (sizeA) {
+            let minBudgetA = Infinity;
+            for (const idx of tris[ti]) {
+                if (Number.isFinite(sizeA[idx]) && sizeA[idx] < minBudgetA) minBudgetA = sizeA[idx];
+            }
+            if (Number.isFinite(minBudgetA)) {
+                const area = triArea(postVerts[0], postVerts[1], postVerts[2]);
+                if (newProtrude > maxProtrude && area > Math.max(areaFloor, areaCoef * minBudgetA)) return true;
+            }
+        }
     }
     return false;
 }
@@ -701,6 +765,121 @@ export function computeVertexProtrudeBudgets(positions, tris, opts = {}) {
         }
     }
     return budgets;
+}
+
+/**
+ * 计算每顶点的「局部输入尺寸预算」（第六轮 P0）：顶点 v 邻接的「有效输入三角形」
+ * （aliveT 且面积 ≥ minArea）的 maxL p95（sizeL[v]）与面积 p95（sizeA[v]），以及任意两邻接
+ * 有效三角形法线夹角的**最大值**（curv[v]，度）。
+ * - 尺寸预算 = 局部输入分布：屁股球面允许的三角形比大腿平面小，指尖允许的比前臂小；
+ *   折叠候选新三角形超过 max(全局下限, 系数 × 三顶点最小预算) 且顶点曲率超阈值 → 拒绝
+ *   （collapseCreatesOversizeTriangle）→ QEM 不再跨曲面合并大平面（袜子/内裤破面根因）。
+ * - 曲率门控：curv[v] < CURV_MIN_DEG 的顶点所在三角形不受尺寸限制（平坦区合并大三角形视觉无害），
+ *   保证合成网格 fixture（≈17°）/圆管（≈15°）不受影响、不误杀减面（防回归关键）。
+ * - 微三角形（面积 < minArea，如双面微片/近退化片）被排除——垃圾法线虚报曲率、微尺寸污染预算。
+ * - 预算 immutable（不随折叠传播）：QEM 折叠后 u 的新位置始终在原始顶点 u 局部邻域内，原始预算
+ *   始终代表当前位置局部尺度；三角形级取「三顶点最小预算」保守方向天然正确（fix6-plan §2.2）。
+ * @param {number[][]|Object[]} positions
+ * @param {number[][]} tris
+ * @param {{aliveT?:Uint8Array, minArea?:number}} [opts]
+ * @returns {{sizeL:Float64Array, sizeA:Float64Array, curv:Float64Array}}
+ */
+export function computeVertexSizeStats(positions, tris, opts = {}) {
+    const { aliveT = null, minArea = SIZE_BUDGET_MIN_AREA } = opts;
+    const n = positions.length;
+    const sizeL = new Float64Array(n).fill(Infinity);
+    const sizeA = new Float64Array(n).fill(Infinity);
+    const curv = new Float64Array(n);
+    const posOf = (i) => (positions[i].position ? positions[i].position : positions[i]);
+    const isDead = (ti) => aliveT && !aliveT[ti];
+    // 有效输入三角形（排除退化/微特征）→ 预计算法线 + 每顶点邻接
+    const validNormal = new Map(); // ti -> 单位法线
+    const vTri = new Array(n);
+    for (let i = 0; i < n; i++) vTri[i] = [];
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (isDead(ti)) continue;
+        const t = tris[ti];
+        const p0 = posOf(t[0]), p1 = posOf(t[1]), p2 = posOf(t[2]);
+        const nrm = triNormal(p0, p1, p2);
+        const len = Math.hypot(nrm[0], nrm[1], nrm[2]);
+        if (len < 1e-12 || 0.5 * len < minArea) continue; // 退化或微特征，不贡献预算
+        validNormal.set(ti, [nrm[0] / len, nrm[1] / len, nrm[2] / len]);
+        for (const idx of t) vTri[idx].push(ti);
+    }
+    const p95 = (arr) => {
+        if (!arr.length) return Infinity;
+        arr.sort((a, b) => a - b);
+        return arr[Math.min(arr.length - 1, Math.floor((arr.length - 1) * 0.95))];
+    };
+    for (let v = 0; v < n; v++) {
+        const list = vTri[v];
+        if (!list.length) continue;
+        const maxLs = [], areas = [];
+        let maxAng = 0;
+        for (const ti of list) {
+            const t = tris[ti];
+            const p0 = posOf(t[0]), p1 = posOf(t[1]), p2 = posOf(t[2]);
+            maxLs.push(triEdgeStats(p0, p1, p2).maxL);
+            areas.push(triArea(p0, p1, p2));
+        }
+        for (let i = 0; i < list.length; i++) {
+            const ni = validNormal.get(list[i]);
+            for (let j = i + 1; j < list.length; j++) {
+                const nj = validNormal.get(list[j]);
+                const cos = Math.max(-1, Math.min(1, ni[0] * nj[0] + ni[1] * nj[1] + ni[2] * nj[2]));
+                const ang = Math.acos(cos) * (180 / Math.PI);
+                if (ang > maxAng) maxAng = ang;
+            }
+        }
+        sizeL[v] = p95(maxLs);
+        sizeA[v] = p95(areas);
+        curv[v] = maxAng;
+    }
+    return { sizeL, sizeA, curv };
+}
+
+/**
+ * 曲率感知三角形尺寸守卫（第六轮 P0）：模拟 u/v 折叠到 newPos，对每个受影响存活三角形（post 几何），
+ * 若其顶点局部曲率 ≥ curvMinDeg，则拒绝「新三角形 maxL 或面积超过 相对局部输入分布预算」的折叠：
+ *   1. c = max(curv[三顶点]，缺省 0)；若 c < curvMinDeg → continue（平坦区不设限）；
+ *   2. budgetL = min(sizeL[三顶点])、budgetA = min(sizeA[三顶点])（缺省 +∞）——取最小 =
+ *      三角形触碰的最细尺度区域是约束来源（跨「球面↔平面」边界的三角形也必须满足球面尺度）；
+ *   3. maxL > max(floorL, coefL × budgetL) → 拒绝；
+ *   4. area > max(floorA, coefA × budgetA) → 拒绝。
+ * 根因：QEM quadric 误差是平面拟合误差，对「跨曲率合并」失明——球面相邻小三角几乎共面（误差≈0
+ * 免费折叠），但大平面跨过球面弧段后矢高随跨度²增长 → 袜子/内裤屁股「破面」。突起守卫只测顶点
+ * 戳出邻面的距离，不测三角形本身多大（跨度/胖度）→ 本守卫补上「尺寸 vs 局部曲率」这条轴。
+ * @param {Float64Array} [sizeL] 每顶点局部输入 maxL 预算
+ * @param {Float64Array} [sizeA] 每顶点局部输入面积预算
+ * @param {Float64Array} [curv] 每顶点局部曲率（度）
+ * @param {number} [curvMinDeg] 曲率门控阈值（默认 CURV_MIN_DEG）
+ * @param {number} [coefL] maxL 系数（默认 MAXL_COEF）
+ * @param {number} [coefA] 面积系数（默认 AREA_COEF）
+ * @param {number} [floorL] maxL 全局下限（默认 0）
+ * @param {number} [floorA] 面积全局下限（默认 0）
+ * @returns {boolean} true=存在超尺寸三角形（应拒绝）
+ */
+export function collapseCreatesOversizeTriangle(
+    positions, tris, aliveT, vTris, u, v, newPos,
+    sizeL = null, sizeA = null, curv = null,
+    curvMinDeg = CURV_MIN_DEG, coefL = MAXL_COEF, coefA = AREA_COEF,
+    floorL = 0, floorA = 0
+) {
+    for (const { postIdx, postVerts } of affectedPostTris(positions, tris, aliveT, vTris, u, v, newPos)) {
+        let c = 0;
+        for (const idx of postIdx) if (curv && curv[idx] > c) c = curv[idx];
+        if (c < curvMinDeg) continue; // 曲率门控：平坦区不设限（防误杀减面）
+        let bl = Infinity, ba = Infinity;
+        for (const idx of postIdx) {
+            if (sizeL && Number.isFinite(sizeL[idx]) && sizeL[idx] < bl) bl = sizeL[idx];
+            if (sizeA && Number.isFinite(sizeA[idx]) && sizeA[idx] < ba) ba = sizeA[idx];
+        }
+        const s = triEdgeStats(postVerts[0], postVerts[1], postVerts[2]);
+        if (s.maxL > Math.max(floorL, coefL * bl)) return true;
+        const area = triArea(postVerts[0], postVerts[1], postVerts[2]);
+        if (area > Math.max(floorA, coefA * ba)) return true;
+    }
+    return false;
 }
 
 /**
@@ -968,6 +1147,13 @@ export function collapseMesh({
     // 随折叠 max 累积（merge 时传播）。
     const protrudeBudgets = computeVertexProtrudeBudgets(positions, tris, { aliveT: inputAlive });
 
+    // 每顶点局部输入尺寸预算 + 曲率（第六轮 P0）：固定取自「有效输入」快照（immutable，不随折叠漂移）。
+    // 供 collapseCreatesOversizeTriangle（新三角形超过 max(floor, 系数×三顶点最小预算) 且曲率超阈值 → 拒）
+    // 与 collapseProtrudes 大鼓包条件（P1，传 sizeA）复用。floor 用 medE 兜底空预算顶点。
+    const { sizeL, sizeA, curv } = computeVertexSizeStats(positions, tris, { aliveT: inputAlive });
+    const floorL = MAXL_FLOOR_RATIO * medE;
+    const floorA = AREA_FLOOR_RATIO * medE * medE;
+
     // 顶点→三角形邻接
     const vTris = new Array(n);
     for (let i = 0; i < n; i++) vTris[i] = [];
@@ -1046,6 +1232,7 @@ export function collapseMesh({
         holeRejects: 0,
         foldOverRejects: 0,
         protrudeRejects: 0,
+        sizeRejects: 0,
         materialRejects: 0,
         newHoleEdges: 0,
         warnings: [],
@@ -1096,7 +1283,17 @@ export function collapseMesh({
         // 近共面微三角团被 QEM 免费合并成跨曲面大平面 → 顶点戳出邻面（指尖「突出的面」根因）。
         // 第五轮预算 cap 机制保留（protrudeCapValue 可传 protrudeCap(medE)），但生产路径默认 Infinity
         // （实测全局 cap 改变折叠顺序 → 指尖残留大平面突起恶化到 0.133 > 输入 0.0983，且无真洞收益）。
-        if (collapseProtrudes(positions, tris, aliveT, vTris, u, v, pos, protrudeMax, protrudeBudgets, protrudeCapValue)) { e.dead = true; stats.rejected++; stats.protrudeRejects++; return; }
+        // 第六轮 P1 大鼓包条件（传入 sizeA）：突起超基础阈值且面积超局部预算的大三角形 → 拒绝。
+        if (collapseProtrudes(positions, tris, aliveT, vTris, u, v, pos, protrudeMax, protrudeBudgets, protrudeCapValue, sizeA)) { e.dead = true; stats.rejected++; stats.protrudeRejects++; return; }
+
+        // 曲率感知三角形尺寸守卫（第六轮 P0）：折叠后受影响三角形超「相对局部输入分布的尺寸上限」
+        // （曲率门控，maxL/面积双轴）→ 拒绝。QEM 对跨曲率合并失明（球面相邻小三角几乎共面 → 免费合并
+        // 成跨曲面大平面 → 袜子/内裤屁股破面）；突起守卫只测顶点戳出邻面距离，不测三角形本身多大 →
+        // 本守卫补上「尺寸 vs 局部曲率」这条轴。
+        if (collapseCreatesOversizeTriangle(positions, tris, aliveT, vTris, u, v, pos,
+                sizeL, sizeA, curv, CURV_MIN_DEG, MAXL_COEF, AREA_COEF, floorL, floorA)) {
+            e.dead = true; stats.rejected++; stats.sizeRejects++; return;
+        }
 
         // 材质动态保护：本次折叠会移除「同时含 u 与 v 的存活三角形」；
         // 若任一材质移除后剩余数跌破最低保留数 → 拒绝折叠（该材质剩余三角形不可再移除）
