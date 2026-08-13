@@ -928,19 +928,25 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
 }
 
 // ---------- 曲率感知尺寸守卫单元测试（第六轮 Scenario E，P0 单元级） ----------
-// 折叠候选：u=0 折叠到 [0,0,0]，受影响三角形 [0,2,3] → post 三角形 [newPos=(0,0,0), P2=(0.9,0,0), P3=(0,0.16,0)]
-// 三边 ≈0.9/0.914/0.16 → maxL≈0.914 > MAXL_COEF×0.5=0.75（超尺寸）；面积=0.072 > AREA_COEF×0.05=0.065（超面积）。
+// 折叠候选：u=0 折叠到 [0,0,0]，受影响三角形 [0,2,3] → post 三角形 [newPos=(0,0,0), P2, P3]。
+// 尺寸超预算构造（随 qem 系数动态缩放，保证任何校准组合下都超 1.4×）：
+//   budgetL = MAXL_COEF×0.5、budgetA = AREA_COEF×0.05；P2=[budgetL×1.4, 0, 0]、P3=[0, 2×budgetA/budgetL, 0]
+//   → maxL ≈ budgetL×1.4 > budgetL（超 maxL 上限）、area = budgetA×1.4 > budgetA（超面积上限）。
 // 构造三组参数：
 //   1) 高曲率（curv=40° ≥ CURV_MIN_DEG）+ 尺寸预算 0.5/0.05 → 必须拒绝（true）；
 //   2) 平坦（curv=0° < CURV_MIN_DEG）+ 同尺寸超预算 → 曲率门控跳过守卫 → 放行（false）；
 //   3) 高曲率 + 预算放大到 0.9/0.1（尺寸内）→ 放行（false，不误杀正常高曲率折叠）。
 // RED 能力：把 collapseCreatesOversizeTriangle 退化为恒 false → highCurvOversizeRejected 变 false → 红。
 {
+  const budgetL = MAXL_COEF * 0.5;
+  const budgetA = AREA_COEF * 0.05;
+  const p2x = budgetL * 1.4;
+  const p3y = (2 * budgetA) / budgetL;
   const positions = [
     [0, 0, 0],     // 0 = u（折叠端点）
     [1, 0, 0],     // 1 = v（折叠端点，不在三角形内）
-    [0.9, 0, 0],   // 2
-    [0, 0.16, 0],  // 3
+    [p2x, 0, 0],   // 2
+    [0, p3y, 0],   // 3
   ];
   const tris = [[0, 2, 3]];
   const aliveT = new Uint8Array(tris.length).fill(1);
@@ -959,7 +965,7 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
     flatGatePasses: guard(sizeL, sizeA, curvFlat) === false,
     inBudgetPasses: guard(sizeLbig, sizeAbig, curvHigh) === false,
     maxL: s.maxL,
-    area: 0.5 * 0.9 * 0.16,
+    area: 0.5 * p2x * p3y,
     maxLBudget: MAXL_COEF * 0.5,
     areaBudget: AREA_COEF * 0.05,
     curvMinDeg: CURV_MIN_DEG,
@@ -968,7 +974,7 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
 
 // ---------- 突起守卫大鼓包单元测试（第六轮 Scenario E2，P1 单元级） ----------
 // 复用 Scenario C 的平面 3×3 网格折叠候选（(4,5)→[0.5,1,0.044]，突起 P≈0.088 介于 PROTRUDE_MAX 0.066
-// 与预算 0.098 之间）：传 sizeA 预算 0.01 → 受影响三角形面积≈0.5 > AREA_COEF×0.01=0.013 → 大鼓包拒绝（true）；
+// 与预算 0.098 之间）：传 sizeA 预算 0.01 → 受影响三角形面积≈0.5 > AREA_COEF×0.01（定稿校准 1.5×0.01=0.015）
 // 传 sizeA=null（旧调用兼容）→ 新增条件关闭 → 仅原 allowance 逻辑（0.098 > 0.088）→ 放行（false）。
 // RED 能力：把新增大鼓包条件删掉 → bigBumpRejects 变 false → 红。
 {

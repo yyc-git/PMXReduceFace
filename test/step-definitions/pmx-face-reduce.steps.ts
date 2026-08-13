@@ -798,13 +798,13 @@ defineFeature(feature, (test) => {
     });
 
     test('曲率感知尺寸守卫拒绝高曲率区超尺寸折叠且不误杀平坦区', ({ given, when, then, and }) => {
-        given(/^构造高曲率（40°≥CURV_MIN_DEG）超尺寸折叠候选（post 三角形 maxL≈0\.914\/面积 0\.072，预算 0\.5\/0\.05）$/, () => {
+        given(/^构造高曲率（40°≥CURV_MIN_DEG）超尺寸折叠候选（post 三角形 maxL\/面积 = 1\.4× 预算 0\.5\/0\.05，随 qem 系数动态构造）$/, () => {
             facts = null;
         });
         when(/^直接调用 qem\.mjs 的 collapseCreatesOversizeTriangle$/, () => {
             facts = runHelper();
         });
-        then(/^返回 true（该折叠被拒绝，maxL 0\.914 > 0\.75 或 面积 0\.072 > 0\.065）$/, () => {
+        then(/^返回 true（该折叠被拒绝，post 三角形超 max\(系数 × 预算\) 上限）$/, () => {
             expect(facts.unitOversizeCollapse.highCurvOversizeRejected).toBe(true);
             expect(facts.unitOversizeCollapse.maxL).toBeGreaterThan(facts.unitOversizeCollapse.maxLBudget);
             expect(facts.unitOversizeCollapse.area).toBeGreaterThan(facts.unitOversizeCollapse.areaBudget);

@@ -233,13 +233,13 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     And 输出文件可解析且 reduce 退出码为 0
 
   # ★ 曲率感知尺寸守卫（第六轮 Scenario E，P0 单元级）：collapseCreatesOversizeTriangle 拒绝跨局部尺寸的折叠
-  # 折叠候选：u=0 折叠到 [0,0,0]，受影响三角形 [0,2,3] → post 三角形 maxL≈0.914 / 面积 0.072，
-  # 超 sizeL 预算 0.5×1.5=0.75 与 sizeA 预算 0.05×1.3=0.065。阈值 import 自 qem.mjs。
+  # 折叠候选：u=0 折叠到 [0,0,0]，受影响三角形 [0,2,3] → post 三角形 maxL/面积 = 1.4× 预算（预算 0.5/0.05，
+  # 随 qem 系数动态构造）。阈值 import 自 qem.mjs。
   # RED 能力：把守卫退化为恒 false → highCurvOversizeRejected 变 false → 立即失败
   Scenario: 曲率感知尺寸守卫拒绝高曲率区超尺寸折叠且不误杀平坦区
-    Given 构造高曲率（40°≥CURV_MIN_DEG）超尺寸折叠候选（post 三角形 maxL≈0.914/面积 0.072，预算 0.5/0.05）
+    Given 构造高曲率（40°≥CURV_MIN_DEG）超尺寸折叠候选（post 三角形 maxL/面积 = 1.4× 预算 0.5/0.05，随 qem 系数动态构造）
     When 直接调用 qem.mjs 的 collapseCreatesOversizeTriangle
-    Then 返回 true（该折叠被拒绝，maxL 0.914 > 0.75 或 面积 0.072 > 0.065）
+    Then 返回 true（该折叠被拒绝，post 三角形超 max(系数 × 预算) 上限）
     And 同一尺寸但平坦（曲率 0° < CURV_MIN_DEG）的候选返回 false（曲率门控不误杀平坦区）
     And 高曲率但尺寸内（预算放大到 0.9/0.1）的候选返回 false（不误杀正常高曲率折叠）
 
