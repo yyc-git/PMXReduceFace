@@ -223,6 +223,33 @@ interface Facts {
   thinTubeOutSliverCount: number;
   thinTubeOutWorst: { aspect: number; maxL: number };
   thinTubeOutTri: number;
+  unitOversizeCollapse: {
+    highCurvOversizeRejected: boolean;
+    flatGatePasses: boolean;
+    inBudgetPasses: boolean;
+    maxL: number;
+    area: number;
+    maxLBudget: number;
+    areaBudget: number;
+    curvMinDeg: number;
+  };
+  unitProtrudeBump: {
+    measured: number;
+    bigBumpRejected: boolean;
+    legacyCompatible: boolean;
+    areaBudget: number;
+  };
+  sphereExit: number;
+  sphereStats: ReduceStats | null;
+  sphereParseable: boolean;
+  sphereInputTri: number;
+  sphereInputMaxLP95: number;
+  sphereInputAreaP95: number;
+  sphereBoundMaxL: number;
+  sphereBoundArea: number;
+  sphereOutTri: number;
+  sphereOutMaxOver: { maxL: number; area: number };
+  sphereOutWithinSize: boolean;
 }
 
 function runHelper(): Facts {
@@ -767,6 +794,66 @@ defineFeature(feature, (test) => {
         and(/^输出文件可解析且 reduce 退出码为 0$/, () => {
             expect(facts.fingerTipParseable).toBe(true);
             expect(facts.fingerTipOutTri).toBeGreaterThan(0);
+        });
+    });
+
+    test('曲率感知尺寸守卫拒绝高曲率区超尺寸折叠且不误杀平坦区', ({ given, when, then, and }) => {
+        given(/^构造高曲率（40°≥CURV_MIN_DEG）超尺寸折叠候选（post 三角形 maxL≈0\.914\/面积 0\.072，预算 0\.5\/0\.05）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseCreatesOversizeTriangle$/, () => {
+            facts = runHelper();
+        });
+        then(/^返回 true（该折叠被拒绝，maxL 0\.914 > 0\.75 或 面积 0\.072 > 0\.065）$/, () => {
+            expect(facts.unitOversizeCollapse.highCurvOversizeRejected).toBe(true);
+            expect(facts.unitOversizeCollapse.maxL).toBeGreaterThan(facts.unitOversizeCollapse.maxLBudget);
+            expect(facts.unitOversizeCollapse.area).toBeGreaterThan(facts.unitOversizeCollapse.areaBudget);
+        });
+        and(/^同一尺寸但平坦（曲率 0° < CURV_MIN_DEG）的候选返回 false（曲率门控不误杀平坦区）$/, () => {
+            expect(facts.unitOversizeCollapse.flatGatePasses).toBe(true);
+        });
+        and(/^高曲率但尺寸内（预算放大到 0\.9\/0\.1）的候选返回 false（不误杀正常高曲率折叠）$/, () => {
+            expect(facts.unitOversizeCollapse.inBudgetPasses).toBe(true);
+            // CURV_MIN_DEG import 自 qem.mjs（真实模型校准后为 12°；断言 > 0 确保取到真实常量而非退化兜底）
+            expect(facts.unitOversizeCollapse.curvMinDeg).toBeGreaterThan(0);
+        });
+    });
+
+    test('突起守卫拒绝突起超基础阈值的大鼓包三角形', ({ given, when, then, and }) => {
+        given(/^构造平面 3×3 网格 \+ 折叠 \(4,5\) 到 \[0\.5,1,0\.044\] 的候选（突起 P≈0\.088，collapseProtrudeMax 实测）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseProtrudes（预算 0\.098，sizeA 预算 0\.01）$/, () => {
+            facts = runHelper();
+        });
+        then(/^面积超局部预算时返回 true（大鼓包被拒绝）$/, () => {
+            expect(facts.unitProtrudeBump.bigBumpRejected).toBe(true);
+            expect(facts.unitProtrudeBump.measured).toBeGreaterThan(0.066);
+        });
+        and(/^传 sizeA=null（旧调用兼容）返回 false（证明是新增条件在起作用）$/, () => {
+            expect(facts.unitProtrudeBump.legacyCompatible).toBe(true);
+            expect(facts.unitProtrudeBump.areaBudget).toBeGreaterThan(0);
+        });
+    });
+
+    test('球面 fixture 减面输出无跨曲面超尺寸三角形', ({ given, when, then, and }) => {
+        given(/^合成球面 fixture PMX 已生成（R=1，seg=8×rings=8，128 输入三角形，曲率全表面 > CURV_MIN_DEG）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出中每个三角形 maxL 与面积均不超过 max\(floor, 系数 × 顶点局部预算上限\)（阈值 import 自 qem\.mjs）$/, () => {
+            expect(facts.sphereExit).toBe(0);
+            expect(facts.sphereParseable).toBe(true);
+            expect(facts.sphereOutWithinSize).toBe(true);
+            expect(facts.sphereOutMaxOver.maxL).toBeLessThanOrEqual(facts.sphereBoundMaxL);
+            expect(facts.sphereOutMaxOver.area).toBeLessThanOrEqual(facts.sphereBoundArea);
+        });
+        and(/^输出文件可解析且 reduce 退出码为 0$/, () => {
+            expect(facts.sphereOutTri).toBeGreaterThan(0);
+            expect(facts.sphereStats).toBeTruthy();
+            expect(facts.sphereStats!.newTriangles).toBeLessThan(facts.sphereInputTri);
         });
     });
 });

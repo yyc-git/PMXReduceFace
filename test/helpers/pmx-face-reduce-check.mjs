@@ -46,6 +46,13 @@ let qemCollapseProtrudes = null;
 let qemCollectFlip = null;
 let qemProtrudeCap = null;
 let qemCountSpatiallyNewBoundaryEdges = null;
+let CURV_MIN_DEG = 20;
+let MAXL_COEF = 1.5;
+let AREA_COEF = 1.3;
+let MAXL_FLOOR_RATIO = 1.0;
+let AREA_FLOOR_RATIO = 0.5;
+let qemComputeSizeStats = null;
+let qemCollapseOversize = null;
 try {
   const qem = await import('../../src/tool/pmx-face-reduce/qem.mjs');
   if (typeof qem.SLIVER_ASPECT_MAX === 'number') SLIVER_ASPECT_MAX = qem.SLIVER_ASPECT_MAX;
@@ -60,6 +67,15 @@ try {
   if (typeof qem.collectFlipMicroFaceVertices === 'function') qemCollectFlip = qem.collectFlipMicroFaceVertices;
   if (typeof qem.protrudeCap === 'function') qemProtrudeCap = qem.protrudeCap;
   if (typeof qem.countSpatiallyNewBoundaryEdges === 'function') qemCountSpatiallyNewBoundaryEdges = qem.countSpatiallyNewBoundaryEdges;
+  // 第六轮 P0 常量/函数（曲率感知尺寸守卫）：动态 import + 本地兜底（RED 时 qem.mjs 被临时 revert
+  // 无这些导出 → 本地常量与恒 false/空实现兜底，其余场景仍可运行、仅新增 E/F 断言失败）。
+  if (typeof qem.CURV_MIN_DEG === 'number') CURV_MIN_DEG = qem.CURV_MIN_DEG;
+  if (typeof qem.MAXL_COEF === 'number') MAXL_COEF = qem.MAXL_COEF;
+  if (typeof qem.AREA_COEF === 'number') AREA_COEF = qem.AREA_COEF;
+  if (typeof qem.MAXL_FLOOR_RATIO === 'number') MAXL_FLOOR_RATIO = qem.MAXL_FLOOR_RATIO;
+  if (typeof qem.AREA_FLOOR_RATIO === 'number') AREA_FLOOR_RATIO = qem.AREA_FLOOR_RATIO;
+  if (typeof qem.computeVertexSizeStats === 'function') qemComputeSizeStats = qem.computeVertexSizeStats;
+  if (typeof qem.collapseCreatesOversizeTriangle === 'function') qemCollapseOversize = qem.collapseCreatesOversizeTriangle;
 } catch (e) { /* 修复前 qem.mjs：本地常量/实现兜底（值固定为修复引入的 0.08/120/1e-3） */ }
 
 // 突起守卫（优先 qem.mjs；RED 验证时 qem.mjs 被临时 revert 无该导出 → 恒 false 放行 → 断言失败）
@@ -148,6 +164,17 @@ function countSpatiallyNewBoundaryEdges(mIn, mOut, tol = 0.2, cell = 0.5) {
   return newCount;
 }
 
+// 每顶点局部输入尺寸预算（优先 qem.mjs；RED 验证时 qem.mjs 被临时 revert 无该导出 → 空实现 → E 断言失败）
+function computeVertexSizeStats(...args) {
+  if (qemComputeSizeStats) return qemComputeSizeStats(...args);
+  return { sizeL: new Float64Array(0), sizeA: new Float64Array(0), curv: new Float64Array(0) };
+}
+// 曲率感知尺寸守卫（优先 qem.mjs；RED 验证时 → 恒 false 放行 → E/F 断言失败）
+function collapseCreatesOversizeTriangle(...args) {
+  if (qemCollapseOversize) return qemCollapseOversize(...args);
+  return false;
+}
+
 // 边长统计（优先 qem.mjs；fallback 与 qem.triEdgeStats 实现一致）
 function triEdgeStats(p0, p1, p2) {
   if (qemTriEdgeStats) return qemTriEdgeStats(p0, p1, p2);
@@ -157,6 +184,13 @@ function triEdgeStats(p0, p1, p2) {
   const maxL = Math.max(e0, e1, e2);
   const minL = Math.min(e0, e1, e2);
   return { maxL, minL, aspect: minL > 1e-12 ? maxL / minL : Infinity };
+}
+
+// 三角形面积（本地副本，口径与 qem.triArea 一致；供球面 fixture 集成断言用）
+function triAreaP(p0, p1, p2) {
+  const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
+  const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
+  return 0.5 * Math.hypot(aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx);
 }
 
 // sliver 判定（优先 qem.mjs；fallback 用阈值常量）
@@ -388,6 +422,35 @@ function buildMixedTubePmx() {
     const i2 = positions.length; positions.push([p0[0] + nx * 0.05, y + 0.02, p0[2] + nz * 0.05]);
     const i3 = positions.length; positions.push([p0[0] - nx * 0.05, y - 0.02, p0[2] - nz * 0.05]);
     tris.push([i0, i1, i2], [i0, i1, i3]);
+  }
+  return buildRawMeshPmx(positions, tris);
+}
+
+// 球面 fixture（第六轮 Scenario F，P0 集成级）：R=1 经纬球，seg=8 段 × rings=8 环 = 128 输入三角形。
+// 校准依据（第六轮实测）：seg=8/rings=8 时每顶点局部曲率（任意两邻接有效三角形法线夹角最大值）
+// 最低 20.8° > CURV_MIN_DEG(20°) → 曲率门控全表面生效（seg=12/rings=24 最低仅 7°——赤道带法线扇
+// 平坦，门控部分失效，实测放行面积超预算三角形 0.0518 → 弃用）；grid fixture p95=4.8°、圆管 seg24
+// p95=15° 均 < 20° → 门控天然跳过，不误杀平坦区（fix6-plan §2.1/§6 R3）。
+// 输入无 sliver/无洞（极区行 r=0/r=rings 各点重合 → 极圈内三角形退化，dropDegenerate 丢弃）。
+// 复现「高曲率曲面 + 深度减面」最小条件（fix5 屁股球面破面的 fixture 版）：target-ratio 0.5 下
+// 守卫开启输出 maxA=0.149 < 1.3×maxFiniteA=0.194（绿）；禁守卫后 QEM 跨球面合并出 maxA=0.295
+// > 0.194 → F 断言失败（RED，RED 实录：maxA 0.295 vs bound 0.194）。
+function buildSpherePmx(R = 1, seg = 8, rings = 8) {
+  const positions = [];
+  const idx = (u, r) => r * (seg + 1) + u;
+  for (let r = 0; r <= rings; r++) {
+    const phi = (r / rings) * Math.PI;
+    const y = R * Math.cos(phi);
+    const rho = R * Math.sin(phi);
+    for (let u = 0; u <= seg; u++) {
+      const a = (u / seg) * Math.PI * 2;
+      positions.push([rho * Math.cos(a), y, rho * Math.sin(a)]);
+    }
+  }
+  const tris = [];
+  for (let r = 0; r < rings; r++) for (let u = 0; u < seg; u++) {
+    const a = idx(u, r), b = idx(u + 1, r), d = idx(u, r + 1), e = idx(u + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
   }
   return buildRawMeshPmx(positions, tris);
 }
@@ -864,6 +927,73 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
   };
 }
 
+// ---------- 曲率感知尺寸守卫单元测试（第六轮 Scenario E，P0 单元级） ----------
+// 折叠候选：u=0 折叠到 [0,0,0]，受影响三角形 [0,2,3] → post 三角形 [newPos=(0,0,0), P2=(0.9,0,0), P3=(0,0.16,0)]
+// 三边 ≈0.9/0.914/0.16 → maxL≈0.914 > MAXL_COEF×0.5=0.75（超尺寸）；面积=0.072 > AREA_COEF×0.05=0.065（超面积）。
+// 构造三组参数：
+//   1) 高曲率（curv=40° ≥ CURV_MIN_DEG）+ 尺寸预算 0.5/0.05 → 必须拒绝（true）；
+//   2) 平坦（curv=0° < CURV_MIN_DEG）+ 同尺寸超预算 → 曲率门控跳过守卫 → 放行（false）；
+//   3) 高曲率 + 预算放大到 0.9/0.1（尺寸内）→ 放行（false，不误杀正常高曲率折叠）。
+// RED 能力：把 collapseCreatesOversizeTriangle 退化为恒 false → highCurvOversizeRejected 变 false → 红。
+{
+  const positions = [
+    [0, 0, 0],     // 0 = u（折叠端点）
+    [1, 0, 0],     // 1 = v（折叠端点，不在三角形内）
+    [0.9, 0, 0],   // 2
+    [0, 0.16, 0],  // 3
+  ];
+  const tris = [[0, 2, 3]];
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(4, tris, aliveT);
+  const newPos = [0, 0, 0];
+  const sizeL = new Float64Array([0.5, Infinity, 0.5, 0.5]);
+  const sizeA = new Float64Array([0.05, Infinity, 0.05, 0.05]);
+  const curvHigh = new Float64Array([40, 0, 40, 40]);
+  const curvFlat = new Float64Array([0, 0, 0, 0]);
+  const sizeLbig = new Float64Array([0.9, Infinity, 0.9, 0.9]);
+  const sizeAbig = new Float64Array([0.1, Infinity, 0.1, 0.1]);
+  const guard = (sl, sa, cv) => collapseCreatesOversizeTriangle(positions, tris, aliveT, vTris, 0, 1, newPos, sl, sa, cv, CURV_MIN_DEG, MAXL_COEF, AREA_COEF, 0, 0);
+  const s = triEdgeStats(newPos, positions[2], positions[3]);
+  facts.unitOversizeCollapse = {
+    highCurvOversizeRejected: guard(sizeL, sizeA, curvHigh) === true,
+    flatGatePasses: guard(sizeL, sizeA, curvFlat) === false,
+    inBudgetPasses: guard(sizeLbig, sizeAbig, curvHigh) === false,
+    maxL: s.maxL,
+    area: 0.5 * 0.9 * 0.16,
+    maxLBudget: MAXL_COEF * 0.5,
+    areaBudget: AREA_COEF * 0.05,
+    curvMinDeg: CURV_MIN_DEG,
+  };
+}
+
+// ---------- 突起守卫大鼓包单元测试（第六轮 Scenario E2，P1 单元级） ----------
+// 复用 Scenario C 的平面 3×3 网格折叠候选（(4,5)→[0.5,1,0.044]，突起 P≈0.088 介于 PROTRUDE_MAX 0.066
+// 与预算 0.098 之间）：传 sizeA 预算 0.01 → 受影响三角形面积≈0.5 > AREA_COEF×0.01=0.013 → 大鼓包拒绝（true）；
+// 传 sizeA=null（旧调用兼容）→ 新增条件关闭 → 仅原 allowance 逻辑（0.098 > 0.088）→ 放行（false）。
+// RED 能力：把新增大鼓包条件删掉 → bigBumpRejects 变 false → 红。
+{
+  const N = 3;
+  const positions = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) positions.push([c, r, 0]);
+  const idx = (c, r) => r * N + c;
+  const tris = [];
+  for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+    const a = idx(c, r), b = idx(c + 1, r), d = idx(c, r + 1), e = idx(c + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
+  }
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(positions.length, tris, aliveT);
+  const bigNew = [0.5, 1, 0.044];
+  const budgets = new Float64Array(positions.length).fill(0.098);
+  const sizeA = new Float64Array(positions.length).fill(0.01);
+  facts.unitProtrudeBump = {
+    measured: collapseProtrudeMax(positions, tris, aliveT, vTris, 4, 5, bigNew),
+    bigBumpRejected: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, bigNew, PROTRUDE_MAX, budgets, Infinity, sizeA) === true,
+    legacyCompatible: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, bigNew, PROTRUDE_MAX, budgets, Infinity, null) === false,
+    areaBudget: AREA_COEF * 0.01,
+  };
+}
+
 // ---------- 双面微片锁定单元测试（P3 flip lock） ----------
 // E1：一对共边、法线相反的微三角形（面积 ≈5e-7 < FLIP_LOCK_AREA，夹角 180° > FLIP_LOCK_ANGLE）
 //     → collectFlipMicroFaceVertices 必须锁定全部 3 顶点。
@@ -1150,6 +1280,80 @@ function parseOutput(p) {
     facts.fingerTipOutProtrudeWorst = op.worst;
     facts.fingerTipOutFlips = countFlipFaces(tipOutModel, 150);
     facts.fingerTipOutTri = tipOutModel.faces.length;
+  }
+}
+
+// ---------- 曲率感知尺寸守卫集成测试（第六轮 Scenario F，P0 集成级）：球面 fixture ----------
+// R=1 经纬球 seg=8 / rings=8 → 128 输入三角形；每顶点曲率最低 20.8° > CURV_MIN_DEG(20°) → 门控全表面生效。
+// target-ratio 0.5 下守卫开启 → 输出每个三角形 maxL/面积 ≤ max(floor, 系数 × 每顶点预算上限)
+// （阈值 import 自 qem.mjs，预算运行时实测）。
+// RED 能力（实录）：把 collapseCreatesOversizeTriangle 恒 false（qem.mjs 内不调用）→ QEM 跨球面合并出
+// 面积 0.295 > 面积上限 0.194（RED）→ sphereOutWithinSize 变 false；守卫开启输出 maxA 0.149 < 0.194（绿）。
+{
+  const sphereBuf = buildSpherePmx();
+  const sphereInput = path.join(tmpDir, 'sphere.pmx');
+  const sphereOut = outPath('sphere');
+  fs.writeFileSync(sphereInput, sphereBuf);
+  const sphereIn = parser.parsePmx(bufToAB(sphereBuf), false);
+  const sphPos = sphereIn.vertices.map((v) => v.position);
+  const sphTris = sphereIn.faces.map((f) => f.indices);
+  const p95 = (arr) => {
+    if (!arr.length) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.min(s.length - 1, Math.floor((s.length - 1) * 0.95))];
+  };
+  const edgeLens = [];
+  const triStats = sphTris.map((t) => {
+    const p0 = sphPos[t[0]], p1 = sphPos[t[1]], p2 = sphPos[t[2]];
+    const s = triEdgeStats(p0, p1, p2);
+    edgeLens.push(
+      Math.hypot(p1[0]-p0[0], p1[1]-p0[1], p1[2]-p0[2]),
+      Math.hypot(p2[0]-p1[0], p2[1]-p1[1], p2[2]-p1[2]),
+      Math.hypot(p0[0]-p2[0], p0[1]-p2[1], p0[2]-p2[2])
+    );
+    return { maxL: s.maxL, area: triAreaP(p0, p1, p2) };
+  });
+  const inputMaxLP95 = p95(triStats.map((x) => x.maxL));
+  const inputAreaP95 = p95(triStats.map((x) => x.area));
+  edgeLens.sort((a, b) => a - b);
+  const medE = edgeLens.length ? edgeLens[Math.floor(edgeLens.length / 2)] : 0;
+  const r = runReduce(['--input', sphereInput, '--output', sphereOut, '--target-ratio', '0.5', '--lock-morph', 'false', '--lock-seams', 'false', '--min-retention', '0', '--lock-small-materials', 'false']);
+  facts.sphereExit = r.exit;
+  facts.sphereStats = r.stats;
+  const sphereOutModel = parseOutput(sphereOut);
+  facts.sphereParseable = !!(sphereOutModel && !sphereOutModel.parseError);
+  facts.sphereInputTri = sphereIn.faces.length;
+  facts.sphereInputMaxLP95 = +inputMaxLP95.toFixed(4);
+  facts.sphereInputAreaP95 = +inputAreaP95.toFixed(4);
+  // 尺寸断言基准：守卫的许可上限 = max(floor, 系数 × 顶点局部预算)。局部预算按每顶点入射三角形 p95
+  // 计算（computeVertexSizeStats，与 collapseMesh 同源）；对输出三角形而言，其 3 顶点预算的最小值
+  // ≤ 全局 max(每顶点预算)，故「输出每个三角形 ≤ max(floor, 系数 × max(每顶点预算))」是守卫不变式的
+  // 充分上界（全局输入 p95 不是——局部 p95 可高于全局 p95，如赤道带个别顶点入射三角形偏大）。
+  // RED 能力：禁守卫后 QEM 跨球面合并出 maxL ≈1.0 级大平面 >> bound → sphereOutWithinSize 变 false。
+  const vs = computeVertexSizeStats(sphPos, sphTris, {});
+  const maxFiniteL = Math.max(...[...vs.sizeL].filter((x) => Number.isFinite(x)));
+  const maxFiniteA = Math.max(...[...vs.sizeA].filter((x) => Number.isFinite(x)));
+  const boundMaxL = Math.max(MAXL_FLOOR_RATIO * medE, MAXL_COEF * maxFiniteL);
+  const boundArea = Math.max(AREA_FLOOR_RATIO * medE * medE, AREA_COEF * maxFiniteA);
+  facts.sphereBoundMaxL = +boundMaxL.toFixed(4);
+  facts.sphereBoundArea = +boundArea.toFixed(4);
+  facts.sphereOutTri = 0;
+  facts.sphereOutMaxOver = { maxL: 0, area: 0 };
+  facts.sphereOutWithinSize = false;
+  if (sphereOutModel && !sphereOutModel.parseError) {
+    const outPos = sphereOutModel.vertices.map((v) => v.position);
+    let overL = 0, overA = 0;
+    for (const f of sphereOutModel.faces) {
+      const [a, b, c] = f.indices;
+      const p0 = outPos[a], p1 = outPos[b], p2 = outPos[c];
+      const s = triEdgeStats(p0, p1, p2);
+      if (s.maxL > boundMaxL) overL = Math.max(overL, s.maxL);
+      const ar = triAreaP(p0, p1, p2);
+      if (ar > boundArea) overA = Math.max(overA, ar);
+    }
+    facts.sphereOutTri = sphereOutModel.faces.length;
+    facts.sphereOutMaxOver = { maxL: +overL.toFixed(4), area: +overA.toFixed(4) };
+    facts.sphereOutWithinSize = overL <= 0 && overA <= 0;
   }
 }
 

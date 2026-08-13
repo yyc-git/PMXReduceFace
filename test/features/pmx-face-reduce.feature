@@ -232,3 +232,35 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     Then 输出最大突起（fingerTipOutProtrudeWorst）不超过输入最大突起（fingerTipInProtrudeWorst）
     And 输出文件可解析且 reduce 退出码为 0
 
+  # ★ 曲率感知尺寸守卫（第六轮 Scenario E，P0 单元级）：collapseCreatesOversizeTriangle 拒绝跨局部尺寸的折叠
+  # 折叠候选：u=0 折叠到 [0,0,0]，受影响三角形 [0,2,3] → post 三角形 maxL≈0.914 / 面积 0.072，
+  # 超 sizeL 预算 0.5×1.5=0.75 与 sizeA 预算 0.05×1.3=0.065。阈值 import 自 qem.mjs。
+  # RED 能力：把守卫退化为恒 false → highCurvOversizeRejected 变 false → 立即失败
+  Scenario: 曲率感知尺寸守卫拒绝高曲率区超尺寸折叠且不误杀平坦区
+    Given 构造高曲率（40°≥CURV_MIN_DEG）超尺寸折叠候选（post 三角形 maxL≈0.914/面积 0.072，预算 0.5/0.05）
+    When 直接调用 qem.mjs 的 collapseCreatesOversizeTriangle
+    Then 返回 true（该折叠被拒绝，maxL 0.914 > 0.75 或 面积 0.072 > 0.065）
+    And 同一尺寸但平坦（曲率 0° < CURV_MIN_DEG）的候选返回 false（曲率门控不误杀平坦区）
+    And 高曲率但尺寸内（预算放大到 0.9/0.1）的候选返回 false（不误杀正常高曲率折叠）
+
+  # ★ 突起守卫大鼓包（第六轮 Scenario E2，P1 单元级）：突起超基础阈值且面积超局部预算 → 拒绝
+  # 复用 Scenario C 的平面 3×3 网格折叠候选（突起 P≈0.088 介于 PROTRUDE_MAX 0.066 与预算 0.098 之间），
+  # 传 sizeA 预算 0.01 → 受影响三角形面积≈0.5 > 1.3×0.01=0.013 → 大鼓包拒绝（大 + 鼓 = 圆锥体）。
+  # RED 能力：把新增大鼓包条件删掉（或传 sizeA=null 断言应拒绝）→ bigBumpRejected 变 false → 红
+  Scenario: 突起守卫拒绝突起超基础阈值的大鼓包三角形
+    Given 构造平面 3×3 网格 + 折叠 (4,5) 到 [0.5,1,0.044] 的候选（突起 P≈0.088，collapseProtrudeMax 实测）
+    When 直接调用 qem.mjs 的 collapseProtrudes（预算 0.098，sizeA 预算 0.01）
+    Then 面积超局部预算时返回 true（大鼓包被拒绝）
+    And 传 sizeA=null（旧调用兼容）返回 false（证明是新增条件在起作用）
+
+  # ★ 曲率感知尺寸守卫（第六轮 Scenario F，P0 集成级）：球面 fixture 减面输出无跨曲面超尺寸三角形
+  # R=1 经纬球 seg=8/rings=8 → 128 输入三角形，每顶点曲率最低 20.8° > CURV_MIN_DEG(20°) → 门控全表面生效；
+  # 输入无 sliver/无洞。target-ratio 0.5 下守卫开启 → 输出每个三角形 maxL/面积 ≤ max(floor, 系数 × 每顶点预算上限)
+  # （阈值 import 自 qem.mjs，预算运行时实测）。
+  # RED 能力（实录）：禁守卫后 QEM 跨球面合并出面积 0.295 > 上限 0.194 → sphereOutWithinSize 变 false → 红
+  Scenario: 球面 fixture 减面输出无跨曲面超尺寸三角形
+    Given 合成球面 fixture PMX 已生成（R=1，seg=8×rings=8，128 输入三角形，曲率全表面 > CURV_MIN_DEG）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then 输出中每个三角形 maxL 与面积均不超过 max(floor, 系数 × 顶点局部预算上限)（阈值 import 自 qem.mjs）
+    And 输出文件可解析且 reduce 退出码为 0
+
