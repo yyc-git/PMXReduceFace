@@ -1,0 +1,401 @@
+import { defineFeature, loadFeature } from 'jest-cucumber';
+import { execSync } from 'child_process';
+import * as path from 'path';
+
+const feature = loadFeature('test/features/pmx-face-reduce.feature');
+
+// 字段与 test/helpers/pmx-face-reduce-check.mjs 输出的 facts JSON 对齐
+interface PerMaterialStat {
+  index: number;
+  name: string;
+  origTri: number;
+  newTri: number;
+}
+interface MaterialProtectionStat {
+  materialIndex: number;
+  origTri: number;
+  minTri: number;
+  finalTri: number;
+  protected: string;
+}
+interface ReduceStats {
+  input: string;
+  output: string;
+  originalVertices: number;
+  newVertices: number;
+  originalTriangles: number;
+  newTriangles: number;
+  targetTriangles: number;
+  lockedCount: number;
+  lockMaterials: number[];
+  protectedMaterials: Array<{ index: number; origTri: number }>;
+  minRetention: number;
+  lockSmallMaterials: boolean;
+  materialProtection: MaterialProtectionStat[];
+  reductionRatio: number;
+  reductionMet: boolean;
+  collapses: number;
+  rejected: number;
+  durationMs: number;
+  perMaterial: PerMaterialStat[];
+}
+interface VerifyStats {
+  originalVertices: number;
+  newVertices: number;
+  originalTriangles: number;
+  newTriangles: number;
+  targetTriangles: number;
+  lockedCount: number;
+  reductionRatio: number;
+  minNormalLength: number | null;
+  maxNormalLength: number;
+  durationMs: number;
+}
+interface VerifyChecks {
+  parseable: boolean;
+  vertexReduced: boolean;
+  triWithinTarget: boolean;
+  lockedVertsPreserved: boolean;
+  lockedCount: number;
+  morphIndicesValid: boolean;
+  morphMappingCorrect: boolean;
+  morphApplyCorrect: boolean;
+  noDegenerateTriangles: boolean;
+  noDuplicateTriangles: boolean;
+  everyNonLockedVertexUsed: boolean;
+  weightsNormalized: boolean;
+  normalsUnitLength: boolean;
+  materialSumConsistent: boolean;
+  headerConsistent: boolean;
+  protectedRetention?: boolean;
+  materialRetentionOk: boolean;
+}
+interface VerifyReport {
+  ok: boolean;
+  checks: VerifyChecks;
+  errorCount: number;
+  errors: string[];
+  stats: VerifyStats | null;
+  perMaterial: PerMaterialStat[];
+}
+interface FixtureSelfCheck {
+  vertexCount: boolean;
+  faceCount: boolean;
+  materialCount: boolean;
+  materialFaceCounts: boolean;
+  morphCount: boolean;
+  seamLockedVerts: boolean;
+}
+interface Facts {
+  inputExists: boolean;
+  fixtureSelfCheck: FixtureSelfCheck;
+  originalVertices: number;
+  originalTriangles: number;
+  originalMaterials: number;
+  originalMaterialFaceCounts: number[];
+  originalHashBefore: string;
+  originalHashAfter: string;
+  originalHashUnchanged: boolean;
+  outputPath05: string;
+  outputExists: boolean;
+  outputNonEmpty: boolean;
+  targetTriangles: number;
+  reduce05Exit: number;
+  reduce05Stats: ReduceStats;
+  reduce05Stderr: string;
+  verify05Exit: number;
+  verify05: VerifyReport;
+  outParseable: boolean;
+  outVertexCount: number;
+  outTriCount: number;
+  reduce10Exit: number;
+  roundtripParseable: boolean;
+  roundtripVertexCount: number;
+  roundtripTriCount: number;
+  roundtripFirstMaterialFaceCount: number;
+  roundtripFirstMaterialOrigFaceCount: number;
+  reduceTriExit: number;
+  reduceTriStats: ReduceStats;
+  verifyTriExit: number;
+  verifyTri: VerifyReport;
+  reduceAutoExit: number;
+  reduceAutoStats: ReduceStats;
+  verifyAutoExit: number;
+  verifyAuto: VerifyReport;
+  reduceAutoBExit: number;
+  reduceAutoBStats: ReduceStats;
+  floorTriangles: number;
+  reduceLockExit: number;
+  reduceLockStats: ReduceStats;
+  verifyLockExit: number;
+  verifyLock: VerifyReport;
+  reduceDegenExit: number;
+  reduceDegenStats: ReduceStats;
+  degenParseable: boolean;
+  degenTriCount: number;
+  degenNoDegenerate: boolean;
+}
+
+function runHelper(): Facts {
+  const helper = path.resolve(__dirname, '..', 'helpers', 'pmx-face-reduce-check.mjs');
+  const out = execSync(`node "${helper}"`, { encoding: 'utf-8', cwd: path.resolve(__dirname, '../..'), timeout: 600000 });
+  return JSON.parse(out.trim());
+}
+
+let facts: Facts | null = null;
+let factsLoaded = false;
+
+defineFeature(feature, (test) => {
+    // 集成 helper 较慢（合成 fixture 生成 + 7 组 reduce + verify），全 feature 只跑一次并缓存
+    const ensureFacts = (): Facts => {
+        if (!factsLoaded) {
+            facts = runHelper();
+            factsLoaded = true;
+        }
+        return facts!;
+    };
+    test('减面输出文件存在且可重新解析', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = ensureFacts();
+        });
+        then(/^输出 pmx 文件存在且非空$/, () => {
+            expect(facts.inputExists).toBe(true);
+            expect(facts.reduce05Exit).toBe(0);
+            expect(facts.outputExists).toBe(true);
+            expect(facts.outputNonEmpty).toBe(true);
+        });
+        and(/^输出文件可被 MMDParser\.parsePmx 重新解析成功$/, () => {
+            expect(facts.outParseable).toBe(true);
+            expect(facts.verify05Exit).toBe(0);
+        });
+    });
+
+    test('面数至少减少 50%', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出三角形数不超过原始三角形数的一半（向上取整）$/, () => {
+            const stats = facts.reduce05Stats;
+            expect(stats).toBeTruthy();
+            expect(stats.newTriangles).toBeLessThanOrEqual(facts.targetTriangles);
+            expect(stats.newTriangles).toBeLessThan(facts.originalTriangles);
+        });
+        and(/^输出顶点数小于原始顶点数$/, () => {
+            expect(facts.reduce05Stats.newVertices).toBeLessThan(facts.originalVertices);
+        });
+    });
+
+    test('morph 引用顶点全锁定且位置不变', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^全部 morph 引用顶点在输出中存在且位置误差小于 1e-6$/, () => {
+            expect(facts.verify05).toBeTruthy();
+            expect(facts.verify05.checks.lockedVertsPreserved).toBe(true);
+        });
+        and(/^全部 morph 元素索引有效且小于新顶点数$/, () => {
+            expect(facts.verify05.checks.morphIndicesValid).toBe(true);
+        });
+    });
+
+    test('输出网格无退化三角形且权重归一化', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出无退化三角形（面积大于 1e-9）$/, () => {
+            expect(facts.verify05.checks.noDegenerateTriangles).toBe(true);
+        });
+        and(/^输出无重复三角形$/, () => {
+            expect(facts.verify05.checks.noDuplicateTriangles).toBe(true);
+        });
+        and(/^输出全部顶点 skinWeights 归一化（Σ≈1）$/, () => {
+            expect(facts.verify05.checks.weightsNormalized).toBe(true);
+        });
+    });
+
+    test('材质与 header 计数一致', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^材质 faceCount 总和等于新 faces 长度$/, () => {
+            expect(facts.verify05.checks.materialSumConsistent).toBe(true);
+        });
+        and(/^输出 header 记录的 vertexCount 与实际一致$/, () => {
+            expect(facts.verify05.checks.headerConsistent).toBe(true);
+        });
+    });
+
+    test('原始 pmx 文件字节不变', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^记录原始文件 hash$/, () => {
+            facts = runHelper();
+        });
+        and(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            // facts 已包含前后 hash（helper 内部执行）
+        });
+        then(/^操作后原始文件 hash 与操作前一致$/, () => {
+            expect(facts.originalHashUnchanged).toBe(true);
+            expect(facts.originalHashBefore).toBe(facts.originalHashAfter);
+        });
+    });
+
+    test('roundtrip 零改动重写数据一致', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 1\.0）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出顶点数与原始一致$/, () => {
+            expect(facts.reduce10Exit).toBe(0);
+            expect(facts.roundtripParseable).toBe(true);
+            expect(facts.roundtripVertexCount).toBe(facts.originalVertices);
+        });
+        and(/^输出三角形数与原始一致$/, () => {
+            expect(facts.roundtripTriCount).toBe(facts.originalTriangles);
+        });
+        and(/^输出首个材质面数与原始一致$/, () => {
+            expect(facts.roundtripFirstMaterialFaceCount).toBe(facts.roundtripFirstMaterialOrigFaceCount);
+        });
+    });
+
+    test('verify 断言输出全部顶点法线单位长度', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^verify 输出 checks\.normalsUnitLength 为 true$/, () => {
+            expect(facts.verify05).toBeTruthy();
+            expect(facts.verify05.checks.normalsUnitLength).toBe(true);
+        });
+        and(/^verify 输出最小\/最大法线长度均在 1 误差 1e-3 内$/, () => {
+            const stats = facts.verify05.stats;
+            expect(stats.minNormalLength).toBeCloseTo(1, 3);
+            expect(stats.maxNormalLength).toBeCloseTo(1, 3);
+        });
+    });
+
+    test('用 --target-tri 指定绝对目标三角形数', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（--target-tri 1600）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出三角形数不超过 1600$/, () => {
+            expect(facts.reduceTriExit).toBe(0);
+            expect(facts.reduceTriStats).toBeTruthy();
+            expect(facts.reduceTriStats.newTriangles).toBeLessThanOrEqual(1600);
+        });
+        and(/^验证脚本 --target-tri 1600 全绿$/, () => {
+            expect(facts.verifyTriExit).toBe(0);
+            expect(facts.verifyTri.ok).toBe(true);
+            expect(facts.verifyTri.stats.targetTriangles).toBe(1600);
+        });
+    });
+
+    test('自动材质保护下小材质全保留且大材质保留率达标', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（--min-retention 0\.3，--target-tri 1600，不带 --lock-materials）$/, () => {
+            facts = runHelper();
+        });
+        then(/^mat3\/mat4（原始面数 ≤500）保留率等于 100%$/, () => {
+            expect(facts.reduceAutoExit).toBe(0);
+            expect(facts.reduceAutoStats).toBeTruthy();
+            for (const mi of [3, 4]) {
+                const pm = (facts.reduceAutoStats.perMaterial || []).find((x: PerMaterialStat) => x.index === mi);
+                expect(pm).toBeTruthy();
+                expect(pm.newTri).toBe(pm.origTri);
+            }
+        });
+        and(/^mat0\/mat1\/mat2（原始面数 >500）保留率不低于 30%$/, () => {
+            for (const mi of [0, 1, 2]) {
+                const pm = (facts.reduceAutoStats.perMaterial || []).find((x: PerMaterialStat) => x.index === mi);
+                expect(pm).toBeTruthy();
+                expect(pm.newTri).toBeGreaterThanOrEqual(Math.floor(pm.origTri * 0.3));
+            }
+        });
+        and(/^输出三角形数不超过 1600$/, () => {
+            expect(facts.reduceAutoStats.newTriangles).toBeLessThanOrEqual(1600);
+        });
+        and(/^验证脚本 --min-retention 0\.3 全绿（含材质保留率断言）$/, () => {
+            expect(facts.verifyAutoExit).toBe(0);
+            expect(facts.verifyAuto).toBeTruthy();
+            expect(facts.verifyAuto.ok).toBe(true);
+            expect(facts.verifyAuto.checks.materialRetentionOk).toBe(true);
+            expect(facts.verifyAuto.checks.normalsUnitLength).toBe(true);
+        });
+        and(/^绝对目标 1000（低于保底 1520）时输出被保底阻断：实际三角形数未达 1000 且不低于保底$/, () => {
+            const stats = facts.reduceAutoBStats;
+            expect(stats).toBeTruthy();
+            // 保底 = 小材质 500 + 大材质下限 1020 = 1520；greedy 实测在 1521 处被阻断（非 1000）
+            expect(stats.reductionMet).toBe(false);
+            expect(stats.newTriangles).toBeGreaterThan(1000);
+            expect(stats.newTriangles).toBeGreaterThanOrEqual(facts.floorTriangles);
+            const retention = (stats.materialProtection || []).find((e: MaterialProtectionStat) => e.protected === 'retention');
+            expect(retention).toBeTruthy();
+            expect(retention.finalTri).toBeGreaterThanOrEqual(retention.minTri);
+        });
+    });
+
+    test('--lock-materials 材质级锁定保留率达标', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（--lock-materials "0"，--min-retention 0，--lock-small-materials false，target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^锁定材质 mat0 保留率不低于 90%$/, () => {
+            expect(facts.reduceLockExit).toBe(0);
+            expect(facts.reduceLockStats).toBeTruthy();
+            const pm = (facts.reduceLockStats.perMaterial || []).find((x: PerMaterialStat) => x.index === 0);
+            expect(pm).toBeTruthy();
+            expect(pm.newTri).toBe(pm.origTri);
+            expect(facts.verifyLock.checks.protectedRetention).toBe(true);
+        });
+        and(/^输出三角形数不超过 1951 且验证脚本全绿$/, () => {
+            expect(facts.reduceLockStats.newTriangles).toBeLessThanOrEqual(1951);
+            expect(facts.verifyLockExit).toBe(0);
+            expect(facts.verifyLock.ok).toBe(true);
+            expect(facts.verifyLock.checks.triWithinTarget).toBe(true);
+        });
+    });
+
+    test('减面丢弃输入中的零面积与重复索引退化三角形', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形，含 2 个非法三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（--target-ratio 0\.999 --target-tri 3900）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出三角形数为 3900（2 个非法三角形被丢弃）$/, () => {
+            expect(facts.reduceDegenExit).toBe(0);
+            expect(facts.degenParseable).toBe(true);
+            expect(facts.degenTriCount).toBe(3900);
+        });
+        and(/^输出无退化三角形（面积大于 1e-9）且无重复索引三角形$/, () => {
+            expect(facts.degenNoDegenerate).toBe(true);
+        });
+    });
+});

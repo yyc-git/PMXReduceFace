@@ -1,0 +1,51 @@
+{
+  "name": "pmx-reduce-face",
+  "version": "1.0.0",
+  "license": "MIT",
+  "description": "PMX face reduction tool (QEM constrained edge collapse): reduce polygon count of MMD PMX models while preserving morphs, UV seams and small materials. PMX 减面工具（QEM 约束边折叠）：在保留 morph、UV 接缝与小材质的前提下削减 MMD PMX 模型面数。",
+  "type": "module",
+  "main": "./src/tool/pmx-face-reduce/reduce.mjs",
+  "bin": {
+    "pmx-reduce-face": "./src/tool/pmx-face-reduce/reduce.mjs",
+    "pmx-reduce-face-verify": "./src/tool/pmx-face-reduce/verify.mjs"
+  },
+  "files": ["src/tool", "README.md", "LICENSE"],
+  "sideEffects": false,
+  "engines": { "node": ">=22" },
+  "keywords": [
+    "pmx", "mmd", "mikumikudance", "mesh", "decimation", "qem", "quadric",
+    "edge-collapse", "lod", "three", "threejs", "3d", "减面", "网格简化", "模型优化"
+  ],
+  "repository": { "type": "git", "url": "git+https://github.com/yyc-git/PMXReduceFace.git" },
+  "homepage": "https://github.com/yyc-git/PMXReduceFace",
+  "bugs": { "url": "https://github.com/yyc-git/PMXReduceFace/issues" },
+  "scripts": {
+    "reduce": "node src/tool/pmx-face-reduce/reduce.mjs",
+    "verify": "node src/tool/pmx-face-reduce/verify.mjs",
+    "test:bdd": "jest --config jest.config.cjs",
+    "test:real": "node scripts/real-model-check.mjs",
+    "demo:prepare": "node scripts/prepare-demo.mjs",
+    "webpack:dev-server": "cross-env NODE_ENV=development webpack-dev-server --config webpack.config.cjs"
+  },
+  "dependencies": {
+    "three": "0.159.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@types/jest": "^29.5.0",
+    "@types/node": "^25.0.0",
+    "@types/three": "0.158.1",
+    "babel-jest": "^29.7.0",
+    "cross-env": "^7.0.3",
+    "html-webpack-plugin": "^5.6.4",
+    "jest": "^29.7.0",
+    "jest-cucumber": "^4.1.0",
+    "ts-jest": "^29.2.5",
+    "ts-loader": "^9.2.6",
+    "typescript": "^5.8.0",
+    "webpack": "^5.91.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.0.4"
+  }
+}

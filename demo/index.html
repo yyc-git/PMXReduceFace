@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PMXReduceFace — LOD 减面对比 Demo</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #222; font-family: "Segoe UI", "Microsoft YaHei", monospace; }
+  #container { width: 100vw; height: 100vh; }
+  #hud {
+    position: fixed; top: 8px; left: 8px; z-index: 10;
+    background: rgba(0,0,0,0.78); color: #0f0; padding: 10px 14px;
+    font-size: 13px; line-height: 1.7; border-radius: 4px; min-width: 270px;
+    pointer-events: none; user-select: none;
+  }
+  #hud .title { color: #fff; font-weight: bold; font-size: 14px; margin-bottom: 4px; }
+  #hud .warn { color: #ff8; }
+  #hud .dim { color: #8f8; opacity: 0.7; }
+  #controls {
+    position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 10;
+    background: rgba(0,0,0,0.78); color: #eee; padding: 8px 14px;
+    font-size: 13px; border-radius: 6px; display: flex; align-items: center; gap: 8px;
+    flex-wrap: wrap; justify-content: center;
+  }
+  #controls button {
+    padding: 6px 16px; font-size: 13px; cursor: pointer; border: 1px solid #555;
+    border-radius: 4px; background: #3c3c3c; color: #eee;
+  }
+  #controls button:hover { background: #4a4a4a; }
+  #controls button.active { background: #2d5d3c; border-color: #4a9a6a; color: #fff; }
+  #controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #msg { color: #ff8; min-height: 1em; }
+  .hint {
+    position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%); z-index: 9;
+    color: rgba(255,255,255,0.45); font-size: 12px; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="container"></div>
+<div id="hud">
+  <div class="title">PMXReduceFace · LOD 减面对比</div>
+  <div id="hud-body">加载中…</div>
+</div>
+<div class="hint">鼠标拖拽旋转 · 滚轮缩放 · 右键平移</div>
+<div id="controls">
+  <span>LOD：</span>
+  <span id="lod-buttons"></span>
+  <span id="msg"></span>
+</div>
+</body>
+</html>
