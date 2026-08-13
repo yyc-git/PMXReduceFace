@@ -10,6 +10,8 @@
 - **细长条 sliver 防护**：折叠代价前校验形状，拒绝会产生「细且长」三角形（aspect ≥ 10 且最长边 ≥ 0.5）的折叠 —— 防止头部/手指/袜子等处冒出长条、多余三角与破面
 - **拓扑守卫（防洞）**：边折叠前用 link condition（Hoppe 1996）+ 洞检测拒绝会制造「非流形边」（共享 >2）或把内部边变边界（洞）的折叠 —— 袜子/内裤等薄壳不再露洞
 - **折叠翻转防护**：拒绝折叠后新三角形与相邻三角形法线夹角突变（>120°）的候选 —— 手指等细长圆柱高曲率区不再冒出多余面片
+- **突起（protrude）防护**：折叠前模拟，拒绝折叠后受影响三角形顶点戳出邻接平面（超过尺度归一化阈值）的候选 —— 指尖近共面微三角团被 QEM「免费」合并成跨曲面大平面 → 手指不再冒出突出的面（第四轮修复）
+- **双面微片锁定**：面积 < 1e-3 且与邻居法线夹角 >120° 的指甲/指缝双面薄片，顶点全锁 100% 保留 —— 杜绝折叠放大/恶化成翻转面
 - **保留 morph**：顶点位移/UV 等 morph 引用的顶点全部进入锁定集，折叠后 morph 索引自动重映射
 - **保留 UV 接缝**：空间重合顶点聚类（`findSeamClusters`），接缝两侧顶点锁定，UV 贴图不撕裂
 - **小材质自动保护**：原始面数 ≤ 500 的材质（眼睛、睫毛等细节）默认 100% 保留
@@ -35,7 +37,7 @@ yarn install
 ### 减面 + 验证
 
 ```bash
-yarn test:bdd       # BDD 全绿（19 场景）
+yarn test:bdd       # BDD 全绿（22 场景）
 npx tsc --noEmit    # 类型检查
 ```
 
@@ -84,7 +86,7 @@ npx pmx-reduce-face-verify in.pmx out.pmx --target-ratio 0.5
 
 > ⚠️ **verify 的锁定参数必须与 reduce 一致**：若 reduce 用了 `--lock-morph false` / `--lock-seams false`，verify 必须传相同参数，否则「morph/接缝顶点锁定」断言会按默认锁定集校验而误报（此时锁定顶点位置断言不适用）。
 
-> ⚠️ **`--target-tri` 与保护下限**：`--min-retention` 与小材质锁定合计出一个「保底三角形数」，任何减面都不会低于它。若 `--target-tri` 低于保底，减面会在保底处停下 —— 工具不报错，但 `newTriangles > target` → 统计里的 `reductionMet=false`，`verify` 的 `triWithinTarget=false` 红。选目标时请让 `--target-tri ≥ 保底`（demo 模型保底约 19668 面，其中含细长条 sliver + 拓扑/翻转守卫额外拦下的少量折叠）。
+> ⚠️ **`--target-tri` 与保护下限**：`--min-retention`、小材质锁定 + 细长条 sliver / 拓扑 / 翻转 / 突起守卫合计出一个「保底三角形数」，任何减面都不会低于它。若 `--target-tri` 低于保底，减面会在保底处停下 —— 工具不报错，但 `newTriangles > target` → 统计里的 `reductionMet=false`，`verify` 的 `triWithinTarget=false` 红。选目标时请让 `--target-tri ≥ 保底`（demo 模型保底约 26082 面：突起守卫为保住指尖不再冒出「突出的面」会拦下深层折叠，是第四轮修复的代价；实测 `--target-tri 20000` 达不到）。
 
 ## 🔬 核心 API
 
@@ -195,11 +197,11 @@ yarn webpack:dev-server    # 启动 dev-server → http://localhost:8096（demo/
 | LOD | 顶点数 | 三角形数 | 减面率 |
 |-----|--------|----------|--------|
 | LOD 100%（原版） | 34,394 | 54,228 | — |
-| LOD 50% | 20,025 | 27,113 | 50.00% |
-| LOD 25% | 16,109 | 19,668 | 63.73% |
-| LOD 10% | 16,109 | 19,668 | 63.73% |
+| LOD 50% | 20,011 | 27,113 | 50.00% |
+| LOD 25% | 19,477 | 26,082 | 51.90% |
+| LOD 10% | 19,477 | 26,082 | 51.90% |
 
-> LOD 25% / 10% 三角数相同，因为已触达 **min-retention + 小材质锁定 + sliver/拓扑/翻转守卫的保底下限**（HUD 会提示「已到保护下限」）—— 这正是材质保护 + 形状/拓扑保护的直观演示。
+> LOD 25% / 10% 三角数相同，因为已触达 **min-retention + 小材质锁定 + sliver/拓扑/翻转/突起守卫的保底下限**（HUD 会提示「已到保护下限」）—— 这正是材质保护 + 形状/拓扑/突起保护的直观演示。第四轮新增的突起守卫为保住指尖/指甲细节，深层减面会在 26082 处停下。
 
 - Demo 统计源：`demo/assets/stats.json`（`yarn demo:prepare` 生成）；缺失时 HUD 回退到页面内实时解析 mesh 几何。
 - 模型 + 纹理：`demo/assets/XiaoMeiOriginFix_02_elrein.pmx` + `demo/assets/tex/`（pmx 与 tex 同目录，纹理相对路径自动解析）。
@@ -239,7 +241,7 @@ PMXReduceFace/
 ## ✅ 测试
 
 ```bash
-yarn test:bdd          # BDD（jest-cucumber，19 场景）：合成 fixture（纯字节生成 PMX，无真实模型依赖）
+yarn test:bdd          # BDD（jest-cucumber，22 场景）：合成 fixture（纯字节生成 PMX，无真实模型依赖）
 npx tsc --noEmit       # 类型检查（demo/main.ts / test steps 是 .ts）
 
 # 可选：真实模型集成检查（不进 test:bdd；对 demo/assets 模型跑 reduce + verify 输出 JSON 报告）
@@ -271,6 +273,8 @@ BDD 覆盖：输出可重解析 / 面数减半 / morph 锁定位置不变 / 无�
 - **Sliver (thin-strip) prevention**: a shape guard runs before each collapse and rejects any collapse that would create a "thin + long" triangle (aspect ≥ 10 with longest edge ≥ 0.5) — preventing long strips / stray triangles / broken surfaces on the head, fingers and socks
 - **Topology guard (hole prevention)**: a link condition (Hoppe 1996) + hole detection reject collapses that would create a non-manifold edge (shared > 2) or turn an interior edge into a boundary (a hole) — thin shells like socks/underwear no longer show holes
 - **Fold-over prevention**: rejects collapses where a surviving triangle's normal would flip > 120° relative to its neighbor — high-curvature thin cylinders like fingers no longer produce stray protruding faces
+- **Protrude prevention**: pre-simulates each collapse and rejects candidates where an affected triangle's vertex would poke out of its neighbors' planes (beyond a scale-normalized threshold) — near-coplanar micro-triangle clusters on the fingertips are no longer "free"-merged into one big cross-surface triangle, so fingers no longer show protruding faces (round 4 fix)
+- **Double-sided micro-face locking**: triangles with area < 1e-3 and a neighbor normal angle > 120° (nail/cuticle double-sided slivers) have their vertices fully locked — collapse can no longer enlarge or worsen them into flipped faces
 - **Morph preservation**: every vertex referenced by vertex/UV morphs enters the locked set; morph indices are remapped after collapse
 - **UV seam preservation**: spatially coincident vertices are clustered (`findSeamClusters`) and locked so textures don't tear
 - **Automatic small-material protection**: materials with ≤ 500 original faces (eyes, lashes, ...) are kept 100% by default
@@ -296,7 +300,7 @@ yarn install
 ### Reduce + Verify
 
 ```bash
-yarn test:bdd       # BDD green (19 scenarios)
+yarn test:bdd       # BDD green (22 scenarios)
 npx tsc --noEmit    # type check
 ```
 
@@ -345,7 +349,7 @@ npx pmx-reduce-face-verify in.pmx out.pmx --target-ratio 0.5
 
 > ⚠️ **verify's lock flags must match reduce**: if reduce ran with `--lock-morph false` / `--lock-seams false`, verify must be given the same flags, otherwise the "morph/seam locked vertices" assertions validate against the default locked set and report false failures (the locked-position assertion doesn't apply then).
 
-> ⚠️ **`--target-tri` vs the protection floor**: `--min-retention` plus small-material locking add up to a minimum triangle count that no reduction goes below. If `--target-tri` is below that floor, reduction stops at the floor — the tool does not error, but `newTriangles > target` → `reductionMet=false` in the stats and `triWithinTarget=false` in verify. Pick `--target-tri ≥ floor` (the demo model's floor is ≈ 19,668, which includes the extra collapses blocked by the sliver/topology/fold-over guards).
+> ⚠️ **`--target-tri` vs the protection floor**: `--min-retention`, small-material locking, plus the sliver/topology/fold-over/protrude guards add up to a minimum triangle count that no reduction goes below. If `--target-tri` is below that floor, reduction stops at the floor — the tool does not error, but `newTriangles > target` → `reductionMet=false` in the stats and `triWithinTarget=false` in verify. Pick `--target-tri ≥ floor` (the demo model's floor is ≈ 26,082: the protrude guard blocks deep collapses to keep the fingertips free of protruding faces — the round-4 fix's cost; `--target-tri 20000` is not reachable).
 
 ## 🔬 Core API
 
@@ -456,11 +460,11 @@ Open `http://localhost:8096` and switch LOD levels via the bottom bar:
 | LOD | Vertices | Triangles | Reduction |
 |-----|----------|-----------|-----------|
 | LOD 100%（original） | 34,394 | 54,228 | — |
-| LOD 50% | 20,025 | 27,113 | 50.00% |
-| LOD 25% | 16,109 | 19,668 | 63.73% |
-| LOD 10% | 16,109 | 19,668 | 63.73% |
+| LOD 50% | 20,011 | 27,113 | 50.00% |
+| LOD 25% | 19,477 | 26,082 | 51.90% |
+| LOD 10% | 19,477 | 26,082 | 51.90% |
 
-> LOD 25% / 10% share the same triangle count because they hit the **min-retention + small-material protection + sliver/topology/fold-over floor** (the HUD shows "protection floor reached") — a direct demonstration of material + shape + topology preservation.
+> LOD 25% / 10% share the same triangle count because they hit the **min-retention + small-material protection + sliver/topology/fold-over/protrude floor** (the HUD shows "protection floor reached") — a direct demonstration of material + shape + topology + protrusion preservation. The round-4 protrude guard stops deep reduction at 26,082 to keep fingertip/nail details.
 
 - Stats source: `demo/assets/stats.json` (generated by `yarn demo:prepare`); the HUD falls back to live mesh geometry parsing when it's missing.
 - Model + textures: `demo/assets/XiaoMeiOriginFix_02_elrein.pmx` + `demo/assets/tex/` (the pmx and tex share a directory, so relative texture paths resolve automatically).
@@ -500,7 +504,7 @@ PMXReduceFace/
 ## ✅ Testing
 
 ```bash
-yarn test:bdd          # BDD（jest-cucumber，19 scenarios）：synthetic fixture（byte-built PMX，no real models）
+yarn test:bdd          # BDD（jest-cucumber，22 scenarios）：synthetic fixture（byte-built PMX，no real models）
 npx tsc --noEmit       # type check（demo/main.ts / test steps are .ts）
 
 # Optional：real-model integration check（not part of test:bdd；runs reduce + verify on the demo model and prints a JSON report）

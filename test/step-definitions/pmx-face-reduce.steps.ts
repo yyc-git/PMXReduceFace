@@ -36,6 +36,7 @@ interface ReduceStats {
   reductionMet: boolean;
   collapses: number;
   rejected: number;
+  protrudeRejects?: number;
   durationMs: number;
   perMaterial: PerMaterialStat[];
 }
@@ -156,6 +157,27 @@ interface Facts {
   unitHoleCreated: { rejected: boolean; linkPasses: boolean };
   unitTopologyNormal: { linkAccepted: boolean; holeAccepted: boolean; foldAccepted: boolean };
   unitFoldOver: { rejected: boolean; normalAccepted: boolean };
+  unitProtrudeCollapse: {
+    rejected: boolean;
+    normalAccepted: boolean;
+    protrudeMax: number;
+  };
+  unitFlipLock: {
+    lockedMicro: boolean;
+    lockCount: number;
+    notMislock: boolean;
+  };
+  fingerTipInputTri: number;
+  fingerTipInProtrude: number;
+  fingerTipInProtrudeWorst: number;
+  fingerTipInFlips: number;
+  fingerTipExit: number;
+  fingerTipStats: ReduceStats | null;
+  fingerTipParseable: boolean;
+  fingerTipOutProtrude: number;
+  fingerTipOutProtrudeWorst: number;
+  fingerTipOutFlips: number;
+  fingerTipOutTri: number;
   sliverTubeInputTri: number;
   sliverTubeInSliverCount: number;
   sliverTubeInBoundary: number;
@@ -582,6 +604,59 @@ defineFeature(feature, (test) => {
         });
         and(/^输出边界边数量不超过输入边界边数量$/, () => {
             expect(facts.sliverTubeOutBoundary).toBeLessThanOrEqual(facts.sliverTubeInBoundary);
+        });
+    });
+
+    test('突起守卫拒绝会产生凸起面的折叠', ({ given, when, then, and }) => {
+        given(/^构造平面条带折叠候选（全 z=0，折叠 \(0,1\) 到 \[0\.5,0,1\] 戳出平面 1\.0 >> PROTRUDE_MAX）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseProtrudes$/, () => {
+            facts = runHelper();
+        });
+        then(/^返回 true（该折叠被拒绝，制造凸起）$/, () => {
+            expect(facts.unitProtrudeCollapse.rejected).toBe(true);
+        });
+        and(/^折叠到原位附近（\[0\.5,0,0\] 平面内）返回 false（突起守卫不误杀）$/, () => {
+            expect(facts.unitProtrudeCollapse.normalAccepted).toBe(true);
+        });
+    });
+
+    test('双面微片锁定守卫锁定共边反向法线微三角顶点', ({ given, when, then, and }) => {
+        given(/^构造一对共边、法线相反的微三角形（面积 < FLIP_LOCK_AREA）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collectFlipMicroFaceVertices$/, () => {
+            facts = runHelper();
+        });
+        then(/^返回的锁定集包含该对三角形的全部 3 顶点$/, () => {
+            expect(facts.unitFlipLock.lockedMicro).toBe(true);
+            expect(facts.unitFlipLock.lockCount).toBe(4);
+        });
+        and(/^一对法线一致、面积正常的三角形不触发锁定（不误锁）$/, () => {
+            expect(facts.unitFlipLock.notMislock).toBe(true);
+        });
+    });
+
+    test('减面输出不新增凸起面与翻转面（指尖 fixture）', ({ given, when, then, and }) => {
+        given(/^合成指尖 fixture PMX 已生成（细管 \+ 半球形指甲盖 \+ 2 对双面微片）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出中顶点到邻接平面距离 > PROTRUDE_MAX 的三角形数不超过输入该数量$/, () => {
+            expect(facts.fingerTipExit).toBe(0);
+            expect(facts.fingerTipParseable).toBe(true);
+            expect(facts.fingerTipOutProtrude).toBeLessThanOrEqual(facts.fingerTipInProtrude);
+        });
+        and(/^输出中法线夹角 >150° 的翻转面数不超过输入该数量$/, () => {
+            expect(facts.fingerTipOutFlips).toBeLessThanOrEqual(facts.fingerTipInFlips);
+        });
+        and(/^输出文件可解析且 reduce 退出码为 0$/, () => {
+            expect(facts.fingerTipOutTri).toBeGreaterThan(0);
+            expect(facts.fingerTipStats).toBeTruthy();
+            expect(facts.fingerTipStats!.newTriangles).toBeLessThan(facts.fingerTipInputTri);
         });
     });
 });

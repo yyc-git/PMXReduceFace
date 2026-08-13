@@ -160,3 +160,32 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     Then 输出无共享数大于 2 的非流形边
     And 输出边界边数量不超过输入边界边数量
 
+  # ★ 突起回归（P3 单元级）：折叠后受影响三角形顶点戳出邻面 → 拒绝
+  # 指尖/指甲区的近共面微三角团被 QEM 免费合并成跨曲面大平面 → 顶点从邻面戳出（「突出的面」根因）
+  # RED 能力：把 qem.mjs 的 collapseProtrudes 退化为恒 false 后，本场景立即失败
+  Scenario: 突起守卫拒绝会产生凸起面的折叠
+    Given 构造平面条带折叠候选（全 z=0，折叠 (0,1) 到 [0.5,0,1] 戳出平面 1.0 >> PROTRUDE_MAX）
+    When 直接调用 qem.mjs 的 collapseProtrudes
+    Then 返回 true（该折叠被拒绝，制造凸起）
+    And 折叠到原位附近（[0.5,0,0] 平面内）返回 false（突起守卫不误杀）
+
+  # ★ 双面微片锁定回归（P3 单元级）：指甲双面薄片顶点全锁，杜绝折叠放大/恶化
+  # 指甲/指缝双面薄片（两三角共边、法线相反、面积 ≤5e-4）是合法几何，不能删/合并，只能锁定
+  # RED 能力：把 qem.mjs 的 collectFlipMicroFaceVertices 退化为恒空后，本场景立即失败
+  Scenario: 双面微片锁定守卫锁定共边反向法线微三角顶点
+    Given 构造一对共边、法线相反的微三角形（面积 < FLIP_LOCK_AREA）
+    When 直接调用 qem.mjs 的 collectFlipMicroFaceVertices
+    Then 返回的锁定集包含该对三角形的全部 3 顶点
+    And 一对法线一致、面积正常的三角形不触发锁定（不误锁）
+
+  # ★ 突起回归（P3 集成级）：指尖 fixture 减面输出无新增凸起面/翻转面
+  # 细管（手指比例）+ 半球形指甲盖（近共面微三角团）+ 2 对双面微片；阈值 import 自 qem.mjs 单一来源
+  # RED 能力：revert 两个守卫（collapseProtrudes 恒 false + collectFlipMicroFaceVertices 恒空）后，
+  # 指甲盖微三角团被 QEM 免费合并成跨曲面大平面 → 输出突起面数暴增 → 本断言失败；恢复后 ≤ 输入基线 → 通过
+  Scenario: 减面输出不新增凸起面与翻转面（指尖 fixture）
+    Given 合成指尖 fixture PMX 已生成（细管 + 半球形指甲盖 + 2 对双面微片）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then 输出中顶点到邻接平面距离 > PROTRUDE_MAX 的三角形数不超过输入该数量
+    And 输出中法线夹角 >150° 的翻转面数不超过输入该数量
+    And 输出文件可解析且 reduce 退出码为 0
+

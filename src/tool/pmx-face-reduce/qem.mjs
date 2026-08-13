@@ -35,6 +35,24 @@ export const SLIVER_MAXL_MIN = 0.5;
 // 折叠翻转（fold-over）阈值：折叠后受影响三角形与其相邻三角形法线夹角超过该角度（且原始夹角正常）
 // 视为「折叠回自身/翻转」，产生视觉上冒出的多余面片（手指细长圆柱高曲率区典型）。
 export const FOLD_ANGLE_MAX_DEG = 120;
+// 突起（protrude）守卫阈值：折叠后受影响三角形顶点到邻接三角形平面的距离超过该值 → 拒绝。
+// 根因：指尖/指甲区的近共面微三角团（面积 ~1e-4）被 QEM「免费」合并成跨曲面大平面 → 顶点从邻面戳出
+// （diag-fingertip 实测突起面 8→98、最大突起 0.098→0.184）。
+// PROTRUDE_MAX = 突起守卫阈值参考值（0.066，实测校准）；collapseMesh 实际使用尺度归一化阈值
+// = PROTRUDE_RATIO × 原始边长中位数（本模型 medE≈0.13 → 0.066）。与每顶点原始突起预算（局部许可）配合：
+// 实际许可 = max(尺度归一化阈值, 受影响三角形顶点的原始突起预算)。
+// 选择依据：指尖近共面微三角团原始突起 ≤0.03 << 0.066，故能拦下「免费合并成跨曲面大平面」
+// （突起 0.08~0.184）；对高曲率区（手/耳/袜口）由局部预算放大许可，不误杀正常简化。
+// 尺度归一化必要：合成 fixture（网格 cell≈1.0）若用绝对 0.066 会误杀（实测 1951 目标只到 2761）。
+// 校准数据（本模型）：0.08 档指尖突起面 4 但 LOD50 达不到目标（27770 > 27114）；0.066 档 LOD50 达标
+// （27114 ≤ 27114）且指尖突起面 6 ≤ 输入基线 8、翻转面仍 34。BDD 计数/单元测试从本常量 import 单一来源。
+export const PROTRUDE_MAX = 0.066;
+export const PROTRUDE_RATIO = 0.4;
+// 双面微片锁定阈值：面积 < FLIP_LOCK_AREA 且与任一邻居法线夹角 > FLIP_LOCK_ANGLE 的三角形
+// （指甲/指缝双面薄片：两三角共边、法线相反 150°~172°、面积 ≤5e-4）→ 锁定其 3 顶点。
+// 双面微片是合法几何（指甲正反面），不能删/不能合并，只能锁 = 100% 保留外观。
+export const FLIP_LOCK_ANGLE = 120;
+export const FLIP_LOCK_AREA = 1e-3;
 // 材质保护：原始三角形数 ≤ SMALL_MATERIAL_TRI 的材质被视为「小材质」，完全不减面（顶点全锁）
 // （verify.mjs 从本模块 import，保证双维护单一来源）
 export const SMALL_MATERIAL_TRI = 500;
@@ -143,6 +161,22 @@ export function triEdgeStats(p0, p1, p2) {
     const maxL = Math.max(e0, e1, e2);
     const minL = Math.min(e0, e1, e2);
     return { maxL, minL, aspect: minL > 1e-12 ? maxL / minL : Infinity };
+}
+
+/**
+ * 原始网格边长中位数：用于尺度归一化突起阈值（PROTRUDE_RATIO × medE）。
+ * 绝对常量阈值会对 coarser 网格（合成 fixture cell≈1.0）误杀，必须相对模型尺度。
+ */
+export function medianEdgeLength(positions, tris) {
+    const es = [];
+    for (const t of tris) {
+        for (const [x, y] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
+            const p = positions[x], q = positions[y];
+            es.push(Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]));
+        }
+    }
+    es.sort((a, b) => a - b);
+    return es.length ? es[Math.floor(es.length / 2)] : 0;
 }
 
 /**
@@ -320,6 +354,195 @@ export function collapseFoldOver(positions, tris, aliveT, vTris, u, v, newPos) {
     return false;
 }
 
+/**
+ * 突起（protrude）守卫：模拟 u/v 折叠到 newPos，对每个受影响且存活的三角形（含 u 或 v、
+ * 不同时含两者的）计算折叠后其 3 个顶点到「相邻存活三角形平面」的最大距离 protrude；
+ * 任一 > maxProtrude → 返回 true（拒绝折叠）。
+ * 数学复用 scripts/diag-fingertip.mjs 的 ptPlaneDist/maxProtrude：顶点到邻接平面距离衡量
+ * 「顶点从曲面戳出」程度。指尖/指甲区的近共面微三角团被 QEM 免费合并成跨曲面大平面 →
+ * 新三角形顶点从邻面戳出（突起 0.08~0.184）→ 本守卫在折叠前拦下此类折叠。
+ * @returns {boolean} true=存在会制造凸起的折叠（应拒绝）
+ */
+export function collapseProtrudes(positions, tris, aliveT, vTris, u, v, newPos, maxProtrude = PROTRUDE_MAX, budgets = null) {
+    const nrm = (p0, p1, p2) => {
+        const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
+        const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
+        return [aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx];
+    };
+    const posOf = (i) => (i === u || i === v ? newPos : positions[i]);
+    const newN = new Map(); // ti -> 折叠后法线（受影响存活三角形）
+    const post = new Map(); // ti -> post-collapse 索引（v→u）
+    const affected = [];
+    for (const ti of vTris[u].concat(vTris[v])) {
+        if (!aliveT[ti]) continue;
+        const t = tris[ti];
+        if (t.includes(u) && t.includes(v)) continue; // 将被移除
+        post.set(ti, t.map((i) => (i === v ? u : i)));
+        newN.set(ti, nrm(posOf(t[0]), posOf(t[1]), posOf(t[2])));
+        affected.push(ti);
+    }
+    // 邻居平面：usePost=true（折叠后几何）时受影响三角形用 newN/post，否则（折叠前几何）全用当前位置/法线
+    const nbrPlane = (tj, usePost) => {
+        if (usePost && newN.has(tj)) return { n: newN.get(tj), q: posOf(tris[tj][0]) };
+        const t = tris[tj];
+        return { n: nrm(positions[t[0]], positions[t[1]], positions[t[2]]), q: positions[t[0]] };
+    };
+    // 顶点到一组邻接平面的最大距离（数学同 scripts/diag-fingertip.mjs 的 ptPlaneDist/maxProtrude）
+    const maxProtrudeOf = (verts, nbs) => {
+        let m = 0;
+        for (const tj of nbs) {
+            const { n, q } = nbrPlane(tj, true);
+            const len = Math.hypot(n[0], n[1], n[2]);
+            if (len < 1e-12) continue;
+            const nx = n[0] / len, ny = n[1] / len, nz = n[2] / len;
+            for (const p of verts) {
+                const d = Math.abs((p[0] - q[0]) * nx + (p[1] - q[1]) * ny + (p[2] - q[2]) * nz);
+                if (d > m) m = d;
+            }
+        }
+        return m;
+    };
+    for (const ti of affected) {
+        const nt = post.get(ti);
+        const postVerts = nt.map((i) => posOf(i)); // 折叠后三角形 3 顶点
+        const nbs = new Set();
+        for (let k = 0; k < 3; k++) {
+            const a = nt[k], b = nt[(k + 1) % 3];
+            if (a !== u && b !== u) {
+                for (const tj of vTris[a]) if (aliveT[tj] && tris[tj].includes(b)) nbs.add(tj);
+            } else {
+                const x = a === u ? b : a;
+                for (const tj of vTris[u]) if (aliveT[tj] && tris[tj].includes(x)) nbs.add(tj);
+                for (const tj of vTris[v]) if (aliveT[tj] && tris[tj].includes(x)) nbs.add(tj);
+            }
+        }
+        nbs.delete(ti);
+        for (const tj of [...nbs]) {
+            if (tris[tj].includes(u) && tris[tj].includes(v)) nbs.delete(tj); // 将被移除，不是邻居
+        }
+        if (!nbs.size) continue;
+        // 局部许可（local allowance）：绝对阈值 与 受影响三角形顶点的原始突起预算（随折叠累积）取大。
+        // 预算固定取自输入几何 → 高曲率区（原始就凸）许可高、指尖近共面微三角团（原始平）许可低，
+        // 既拦住「免费合并成跨曲面大平面」（突起 0.08~0.184 >> 预算 0.03），又不误杀高曲率区正常简化。
+        const allowance = budgets
+            ? Math.max(maxProtrude, budgets[tris[ti][0]], budgets[tris[ti][1]], budgets[tris[ti][2]])
+            : maxProtrude;
+        const newProtrude = maxProtrudeOf(postVerts, nbs);
+        if (newProtrude > allowance) return true;
+    }
+    return false;
+}
+
+/**
+ * 计算每顶点的「原始突起预算」：该顶点在原始输入几何中，其邻接三角形到邻接平面的最大突起距离。
+ * 作为 collapseProtrudes 的局部许可（local allowance）：高曲率区（手/耳/袜口）原始就凸，预算高；
+ * 指尖近共面微三角团原始平，预算低 → 折叠不允许产生超过局部原始水平的凸起。
+ * 预算固定取自输入几何（不随折叠漂移），杜绝「增量漂移」绕过绝对阈值。
+ * @returns {Float64Array} budgets[i] = 顶点 i 的原始突起预算
+ */
+export function computeVertexProtrudeBudgets(positions, tris) {
+    const n = positions.length;
+    const edgeMap = new Map();
+    for (let ti = 0; ti < tris.length; ti++) {
+        const t = tris[ti];
+        for (let k = 0; k < 3; k++) {
+            const a = t[k], b = t[(k + 1) % 3];
+            const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+            if (!edgeMap.has(key)) edgeMap.set(key, []);
+            edgeMap.get(key).push(ti);
+        }
+    }
+    const info = tris.map((t) => {
+        const p0 = positions[t[0]], p1 = positions[t[1]], p2 = positions[t[2]];
+        const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
+        const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
+        const nx = aby * acz - abz * acy, ny = abz * acx - abx * acz, nz = abx * acy - aby * acx;
+        const nl = Math.hypot(nx, ny, nz) || 1;
+        return { n: [nx / nl, ny / nl, nz / nl], verts: [p0, p1, p2] };
+    });
+    const budgets = new Float64Array(n);
+    for (let ti = 0; ti < tris.length; ti++) {
+        const it = info[ti];
+        const t = tris[ti];
+        const nbs = new Set();
+        for (let k = 0; k < 3; k++) {
+            const a = t[k], b = t[(k + 1) % 3];
+            const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+            for (const tj of edgeMap.get(key) || []) if (tj !== ti) nbs.add(tj);
+        }
+        let maxP = 0;
+        for (const tj of nbs) {
+            const nj = info[tj];
+            const q = nj.verts[0];
+            for (const p of it.verts) {
+                const d = Math.abs((p[0] - q[0]) * nj.n[0] + (p[1] - q[1]) * nj.n[1] + (p[2] - q[2]) * nj.n[2]);
+                if (d > maxP) maxP = d;
+            }
+        }
+        if (maxP > 0) {
+            for (const v of t) if (maxP > budgets[v]) budgets[v] = maxP;
+        }
+    }
+    return budgets;
+}
+
+/**
+ * 收集「双面微片」顶点（守卫 2）：扫描原始三角形，凡「与任一邻居法线夹角 > FLIP_LOCK_ANGLE
+ * 且面积 < FLIP_LOCK_AREA」的三角形 → 锁定其 3 个顶点。指甲/指缝双面薄片（两三角共边、法线相反、
+ * 面积 ≤5e-4）折叠会被合并放大或恶化成 >150° 翻转 → 直接锁顶点保证 100% 保留外观。
+ * positions 接受 { position:[3] } 顶点数组或纯位置数组（单元测试传纯数组）。
+ * @returns {Set<number>} 需锁定的顶点索引集
+ */
+export function collectFlipMicroFaceVertices(positions, tris) {
+    const posOf = (i) => (positions[i].position ? positions[i].position : positions[i]);
+    const nrm = (t) => {
+        const p0 = posOf(t[0]), p1 = posOf(t[1]), p2 = posOf(t[2]);
+        const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
+        const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
+        return [aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx];
+    };
+    const edgeMap = new Map();
+    for (let ti = 0; ti < tris.length; ti++) {
+        const t = tris[ti];
+        for (let k = 0; k < 3; k++) {
+            const a = t[k], b = t[(k + 1) % 3];
+            const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+            if (!edgeMap.has(key)) edgeMap.set(key, []);
+            edgeMap.get(key).push(ti);
+        }
+    }
+    const COS_FLIP = Math.cos((FLIP_LOCK_ANGLE * Math.PI) / 180);
+    const info = tris.map((t) => {
+        const n = nrm(t);
+        return { n, area: 0.5 * Math.hypot(n[0], n[1], n[2]) };
+    });
+    const locked = new Set();
+    for (let ti = 0; ti < tris.length; ti++) {
+        const { n, area } = info[ti];
+        if (area >= FLIP_LOCK_AREA) continue; // 只锁微面积三角
+        const nl = Math.hypot(n[0], n[1], n[2]);
+        if (nl < 1e-12) continue; // 退化三角形无法判断法线夹角
+        const t = tris[ti];
+        const nbs = new Set();
+        for (let k = 0; k < 3; k++) {
+            const a = t[k], b = t[(k + 1) % 3];
+            const key = a < b ? `${a}:${b}` : `${b}:${a}`;
+            for (const tj of edgeMap.get(key) || []) if (tj !== ti) nbs.add(tj);
+        }
+        for (const tj of nbs) {
+            const jn = info[tj].n;
+            const jl = Math.hypot(jn[0], jn[1], jn[2]);
+            if (jl < 1e-12) continue;
+            const cos = (n[0] * jn[0] + n[1] * jn[1] + n[2] * jn[2]) / (nl * jl);
+            if (cos < COS_FLIP) {
+                for (const idx of t) locked.add(idx);
+                break;
+            }
+        }
+    }
+    return locked;
+}
+
 /* ------------------------------------------------------------------ *
  * 法线重算（面积加权）
  * ------------------------------------------------------------------ */
@@ -441,6 +664,17 @@ export function collapseMesh({
     const aliveV = new Uint8Array(n).fill(1);
     const tris = triangles.map((t) => t.slice());
     const aliveT = new Uint8Array(tris.length).fill(1);
+
+    // 双面微片锁定（守卫 2）：指甲/指缝双面薄片顶点全锁，100% 保留外观。
+    // 用原始顶点对象（position 未参与折叠），与 collapseMesh 内部分发 positions 拷贝解耦。
+    for (const vi of collectFlipMicroFaceVertices(vertices, tris)) locked.add(vi);
+
+    // 突起守卫阈值：绝对 PROTRUDE_MAX 与尺度归一化 PROTRUDE_RATIO × medE 取大。
+    // 细网格（本模型 medE≈0.13）→ 0.066 绝对阈值生效（校准保证指尖突起面 ≤ 输入、翻转面 34、LOD50 达标）；
+    // coarser 网格（合成 fixture cell≈1.0）→ 阈值随尺度放大，避免误杀正常简化。
+    const protrudeMax = Math.max(PROTRUDE_MAX, PROTRUDE_RATIO * medianEdgeLength(positions, tris));
+    // 每顶点原始突起预算（局部许可）：固定取自输入几何，随折叠 max 累积（merge 时传播）
+    const protrudeBudgets = computeVertexProtrudeBudgets(positions, tris);
 
     // 材质保护初始化：每材质原始三角形数 / 最低保留数 / 当前存活数 / 是否触发过保护
     // 小材质锁定（lockSmallMaterials）：原始三角形数 ≤ SMALL_MATERIAL_TRI 的材质 → 全部三角形顶点入锁定集
@@ -575,6 +809,7 @@ export function collapseMesh({
         linkRejects: 0,
         holeRejects: 0,
         foldOverRejects: 0,
+        protrudeRejects: 0,
         materialRejects: 0,
         warnings: [],
     };
@@ -635,6 +870,10 @@ export function collapseMesh({
         // 细长圆柱（手指）高曲率区折叠易「翻回自身」冒出多余面片。
         if (collapseFoldOver(positions, tris, aliveT, vTris, u, v, pos)) { e.dead = true; stats.rejected++; stats.foldOverRejects++; return; }
 
+        // 突起守卫（P3）：折叠后受影响三角形顶点到邻接平面距离 > protrudeMax（尺度归一化）→ 拒绝。
+        // 近共面微三角团被 QEM 免费合并成跨曲面大平面 → 顶点戳出邻面（指尖「突出的面」根因）。
+        if (collapseProtrudes(positions, tris, aliveT, vTris, u, v, pos, protrudeMax, protrudeBudgets)) { e.dead = true; stats.rejected++; stats.protrudeRejects++; return; }
+
         // 材质动态保护：本次折叠会移除「同时含 u 与 v 的存活三角形」；
         // 若任一材质移除后剩余数跌破最低保留数 → 拒绝折叠（该材质剩余三角形不可再移除）
         if (aliveMatTri && minRetention > 0) {
@@ -686,6 +925,9 @@ export function collapseMesh({
         addQuadric(quadrics[u], quadrics[v]);
         quadrics[v].fill(0);
         aliveV[v] = 0;
+        // 突起预算随顶点合并传播（max 累积）：大三角的顶点携带其合并子区域的原始突起预算，
+        // 避免静态预算对重度减面后的大三角形低估局部许可。
+        if (protrudeBudgets[v] > protrudeBudgets[u]) protrudeBudgets[u] = protrudeBudgets[v];
 
         // 更新受影响三角形：v→u；含 u 与 v 的三角形退化标记死亡
         let removed = 0;
@@ -804,3 +1046,5 @@ export function collapseMesh({
     stats.finalTriangles = newTris.length;
     return { vertices: newVerts, triangles: newTris, indexMap, keptTriIndices, stats };
 }
+
+
