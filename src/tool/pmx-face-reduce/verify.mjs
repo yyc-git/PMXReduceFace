@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadPmx } from '../lib/pmx-loader.mjs';
 import { buildLockedSet, VERTEX_MORPH_TYPES } from './lock-set.mjs';
-import { triArea, SMALL_MATERIAL_TRI } from './qem.mjs';
+import { triArea, SMALL_MATERIAL_TRI, triEdgeStats, maxProtrudeOfVerts, buildEdgeTris, buildBoundaryEdgeGrid, pointSegDist2, HOLE_TOL } from './qem.mjs';
 
 const POS_TOL = 1e-6;
 const MORPH_TOL = 1e-5;
@@ -15,10 +15,207 @@ const AREA_MIN = 1e-9;
 const MAX_REPORT_ERRORS = 30;
 // 受保护材质（--lock-materials）的最低保留率
 const PROTECTED_RETENTION_MIN = 0.9;
+// 质量检查项（第六轮 §4.1）：qualityChecksActive=false（无 BurumaSet 材质）→ 各质量项跳过且视为 ok
+const QUALITY_CHECKS = [
+    'burumaAreaP99Growth',
+    'burumaMaxLP90Growth',
+    'fingertipProtrudeShape',
+    'noNewOversizeTriangles',
+    'noNonManifoldEdges',
+    'noNewHoles',
+];
+// 指尖突起形态检查的区域与突起阈值（口径与 scripts/diag-fingertip.mjs 一致）
+const FINGERTIP_REGION = (c) => Math.abs(c[0]) > 8.0 && c[1] > 13.8 && c[1] < 15.0;
+const FINGERTIP_PROTRUDE = 0.08;
+// 新增超尺寸三角形判据：输出 maxL > 输入全局 maxL p99，且质心与「输入固有巨型三角形（maxL > 输入 p99）」
+// 质心距离 ≥ 该容差 → 视为新增（R6：精确顶点匹配容差太紧会把移动过的输入三角形误计为新增，用质心 0.05）
+const OVERSIZE_MATCH_TOL = 0.05;
+// 新增超尺寸三角形「跨曲面合并」判定阈值：新三角形所在输出表面（与边邻接三角形法线夹角最大值）超过该
+// 角度 → 该三角形跨过弯曲表面（视觉破面）；平坦区新大三角形视觉无害不计。固定 20°（fix6-plan §2.1
+// CURV_MIN_DEG 设计值，视觉危害线），与守卫自身的 CURV_MIN_DEG（可调低以更早拦截）解耦。
+const OVERSIZE_CURVED_DEG = 20;
 
 function vecDist(a, b) {
     const dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
     return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+function percentile(arr, p) {
+    if (!arr.length) return 0;
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.min(s.length - 1, Math.floor((s.length - 1) * p))];
+}
+
+// 名字含 namePart 的材质所辖三角形索引列表（按 faceCount 累计偏移）；无匹配材质 → null
+function materialFaceIndices(model, namePart) {
+    const mats = [];
+    model.materials.forEach((mat, i) => { if (String(mat.name).includes(namePart)) mats.push(i); });
+    if (!mats.length) return null;
+    const list = [];
+    let acc = 0;
+    for (let mi = 0; mi < model.materials.length; mi++) {
+        const cnt = model.materials[mi].faceCount || 0;
+        if (mats.includes(mi)) for (let j = 0; j < cnt; j++) list.push(acc + j);
+        acc += cnt;
+    }
+    return list;
+}
+
+function triGeom(vertices, face) {
+    const [a, b, c] = face.indices;
+    const p0 = vertices[a].position, p1 = vertices[b].position, p2 = vertices[c].position;
+    return { area: triArea(p0, p1, p2), maxL: triEdgeStats(p0, p1, p2).maxL };
+}
+
+function triGeomVerts(positions, t) {
+    const p0 = positions[t[0]], p1 = positions[t[1]], p2 = positions[t[2]];
+    return { area: triArea(p0, p1, p2), maxL: triEdgeStats(p0, p1, p2).maxL };
+}
+
+function triCentroid(positions, t) {
+    const p0 = positions[t[0]], p1 = positions[t[1]], p2 = positions[t[2]];
+    return [(p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, (p0[2] + p1[2] + p2[2]) / 3];
+}
+
+// 指尖区域突起 > FINGERTIP_PROTRUDE 的三角形数量 + 最大面积（口径 = qem.maxProtrudeOfVerts 单一来源）
+function fingertipStats(positions, tris) {
+    const edgeMap = buildEdgeTris(tris);
+    let count = 0, maxArea = 0;
+    for (let ti = 0; ti < tris.length; ti++) {
+        const c = triCentroid(positions, tris[ti]);
+        if (!FINGERTIP_REGION(c)) continue;
+        const protrude = maxProtrudeOfVerts(positions, tris, ti, edgeMap);
+        if (protrude > FINGERTIP_PROTRUDE) {
+            count++;
+            const ar = triGeomVerts(positions, tris[ti]).area;
+            if (ar > maxArea) maxArea = ar;
+        }
+    }
+    return { count, maxArea };
+}
+
+// 新增超尺寸三角形数：输出 maxL > inMaxLP99 且质心无法在「输入固有巨型三角形」容差内匹配。
+// 返回 { count, curvedCount }：curvedCount = 新增超尺寸中「输出表面曲率 > minAngDeg」的数量
+// （跨曲面合并的判定：曲面上新出现大三角形 → 视觉破面；平坦区新大三角形视觉无害 → 不计）。
+function countNewOversize(inPos, inTri, outPos, outTri, inMaxLP99, minAngDeg) {
+    const CELL = OVERSIZE_MATCH_TOL;
+    const grid = new Map();
+    for (const t of inTri) {
+        if (triGeomVerts(inPos, t).maxL <= inMaxLP99) continue;
+        const c = triCentroid(inPos, t);
+        const gk = `${Math.floor(c[0] / CELL)},${Math.floor(c[1] / CELL)},${Math.floor(c[2] / CELL)}`;
+        if (!grid.has(gk)) grid.set(gk, []);
+        grid.get(gk).push(c);
+    }
+    // 输出三角形法线 + 边邻接（供「新三角形所在表面是否弯曲」判定）
+    const outNorm = outTri.map((t) => {
+        const p0 = outPos[t[0]], p1 = outPos[t[1]], p2 = outPos[t[2]];
+        const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
+        const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
+        const n = [aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx];
+        const len = Math.hypot(n[0], n[1], n[2]);
+        return len < 1e-12 ? null : [n[0] / len, n[1] / len, n[2] / len];
+    });
+    const edgeMap = new Map();
+    for (let ti = 0; ti < outTri.length; ti++) {
+        const t = outTri[ti];
+        for (const [x, y] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
+            const k = x < y ? `${x}:${y}` : `${y}:${x}`;
+            if (!edgeMap.has(k)) edgeMap.set(k, []);
+            edgeMap.get(k).push(ti);
+        }
+    }
+    const COS_MIN = Math.cos((minAngDeg * Math.PI) / 180);
+    let newCount = 0, curvedCount = 0;
+    for (let ti = 0; ti < outTri.length; ti++) {
+        if (triGeomVerts(outPos, outTri[ti]).maxL <= inMaxLP99) continue;
+        const c = triCentroid(outPos, outTri[ti]);
+        const gx = Math.floor(c[0] / CELL), gy = Math.floor(c[1] / CELL), gz = Math.floor(c[2] / CELL);
+        let matched = false;
+        outer: for (let dx = -1; dx <= 1 && !matched; dx++) for (let dy = -1; dy <= 1 && !matched; dy++) for (let dz = -1; dz <= 1 && !matched; dz++) {
+            const cands = grid.get(`${gx + dx},${gy + dy},${gz + dz}`);
+            if (!cands) continue;
+            for (const ic of cands) if (Math.hypot(ic[0] - c[0], ic[1] - c[1], ic[2] - c[2]) < OVERSIZE_MATCH_TOL) { matched = true; break outer; }
+        }
+        if (matched) continue;
+        newCount++;
+        // 新三角形所在输出表面的曲率：与边邻接三角形法线夹角最大值 > minAngDeg → 跨曲面合并（有害）
+        const nn = outNorm[ti];
+        if (!nn) continue;
+        const t = outTri[ti];
+        const nbs = new Set();
+        for (const [x, y] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
+            const k = x < y ? `${x}:${y}` : `${y}:${x}`;
+            for (const tj of edgeMap.get(k) || []) if (tj !== ti) nbs.add(tj);
+        }
+        let curved = false;
+        for (const tj of nbs) {
+            const on = outNorm[tj];
+            if (!on) continue;
+            if (nn[0] * on[0] + nn[1] * on[1] + nn[2] * on[2] < COS_MIN) { curved = true; break; }
+        }
+        if (curved) curvedCount++;
+    }
+    return { count: newCount, curvedCount };
+}
+
+// 输出边共享三角形数 > 2 的边数量（非流形边）
+function countNonManifoldEdges(tris) {
+    const cnt = new Map();
+    const key = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    for (const t of tris) {
+        for (const [x, y] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
+            const k = key(x, y);
+            cnt.set(k, (cnt.get(k) || 0) + 1);
+        }
+    }
+    let nonManifold = 0;
+    for (const c of cnt.values()) if (c > 2) nonManifold++;
+    return nonManifold;
+}
+
+// 袜子区域（BurumaSet 材质）空间上新增的边界边数量：输出边界边中点落在袜子区域（y 9-19 且距最近
+// BurumaSet 三角形质心 < 0.5，口径与 scripts/diag-sock.mjs 一致），且距最近输入边界边线段 > HOLE_TOL
+// → 新增洞。全模型 countSpatiallyNewBoundaryEdges 对真实模型非 0（头部/躯干开放边界在减面中合法
+// 回缩滑动 0.2~1.0，fix5 实测 41，属「边界沿原边界回缩」合法简化而非洞，fix6-plan §1.4 点 5），
+// 故断言范围限定袜子区域——那里才是「薄壳破面」的判定区（fix6-plan §9：unmatchedBndCount ≤ 1）。
+function countNewSockBoundaryEdges(inPos, inTri, outPos, outTri, sockTriangles) {
+    const { grid, cell } = buildBoundaryEdgeGrid(inPos, inTri, null, 0.5);
+    const TOL2 = HOLE_TOL * HOLE_TOL;
+    const sockCentroids = sockTriangles.map((fi) => triCentroid(outPos, outTri[fi]));
+    const cnt = new Map(), mid = new Map();
+    const key = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    for (let ti = 0; ti < outTri.length; ti++) {
+        const t = outTri[ti];
+        for (const [x, y] of [[t[0], t[1]], [t[1], t[2]], [t[2], t[0]]]) {
+            const k = key(x, y);
+            cnt.set(k, (cnt.get(k) || 0) + 1);
+            if (!mid.has(k)) {
+                const px = outPos[x], py = outPos[y];
+                mid.set(k, [(px[0] + py[0]) / 2, (px[1] + py[1]) / 2, (px[2] + py[2]) / 2]);
+            }
+        }
+    }
+    let newCount = 0;
+    for (const [k, c] of cnt) {
+        if (c !== 1) continue;
+        const p = mid.get(k);
+        if (p[1] < 9 || p[1] > 19) continue;
+        let near = false;
+        for (const sc of sockCentroids) {
+            if (Math.hypot(sc[0] - p[0], sc[1] - p[1], sc[2] - p[2]) < 0.5) { near = true; break; }
+        }
+        if (!near) continue;
+        const gx = Math.floor(p[0] / cell), gy = Math.floor(p[1] / cell), gz = Math.floor(p[2] / cell);
+        let ok = false;
+        outer: for (let dx = -1; dx <= 1 && !ok; dx++) for (let dy = -1; dy <= 1 && !ok; dy++) for (let dz = -1; dz <= 1 && !ok; dz++) {
+            const segs = grid.get(`${gx + dx},${gy + dy},${gz + dz}`);
+            if (!segs) continue;
+            for (const [sa, sb] of segs) if (pointSegDist2(p, sa, sb) < TOL2) { ok = true; break outer; }
+        }
+        if (!ok) newCount++;
+    }
+    return newCount;
 }
 
 export function verifyFaces({
@@ -288,6 +485,75 @@ export function verifyFaces({
             checks.materialRetentionOk = materialRetentionOk;
         }
 
+        // 9. 视觉质量检查（第六轮 §4.1）：阈值全部运行时实测（输入 p99/p90/突起面积），断言里只有
+        // 增长系数（1.3/1.5）等比例常数，不硬编码被测值。qualityChecksActive=false（无 BurumaSet 材质）
+        // → 各质量项跳过且视为 ok（BDD 合成 fixture 无此材质 → 自动跳过，不影响既有场景）。
+        const quality = { active: false };
+        function checkQuality() {
+            const bMat = materialFaceIndices(orig, 'BurumaSet');
+            checks.qualityChecksActive = bMat !== null;
+            if (bMat === null) {
+                for (const k of QUALITY_CHECKS) checks[k] = true;
+                return;
+            }
+            quality.active = true;
+            const origPos = orig.vertices.map((v) => v.position);
+            const decPos = dec.vertices.map((v) => v.position);
+            const origTri = orig.faces.map((f) => f.indices);
+            const decTri = dec.faces.map((f) => f.indices);
+
+            // BurumaSet 面积/边长分位数（输入 vs 输出，运行时实测）
+            const inAreas = [], inMaxLs = [], outAreas = [], outMaxLs = [];
+            for (const fi of bMat) {
+                const g = triGeom(orig.vertices, orig.faces[fi]);
+                inAreas.push(g.area); inMaxLs.push(g.maxL);
+            }
+            const bMatOut = materialFaceIndices(dec, 'BurumaSet');
+            if (bMatOut) {
+                for (const fi of bMatOut) {
+                    const g = triGeom(dec.vertices, dec.faces[fi]);
+                    outAreas.push(g.area); outMaxLs.push(g.maxL);
+                }
+            }
+            const inAreaP99 = percentile(inAreas, 0.99);
+            const outAreaP99 = bMatOut ? percentile(outAreas, 0.99) : Infinity;
+            const inMaxLP90 = percentile(inMaxLs, 0.90);
+            const outMaxLP90 = bMatOut ? percentile(outMaxLs, 0.90) : Infinity;
+            // 面积 p99 增长系数 1.5（第六轮校准，fix6-plan §8 步骤 5）：输入 BurumaSet 本身含 100 个
+            // 面积 > 0.0998 的固有巨型三角形（实测），深度减面后这些保留巨型的百分位前移，1.3× 不可达
+            // （实测 fix6 输出 p99=0.109 但 1.3×=0.0998）；1.5×=0.115 分界清晰：fix5 0.156 RED / fix6 0.109 GREEN。
+            quality.burumaArea = { inP99: inAreaP99, outP99: outAreaP99, coef: 1.5, threshold: inAreaP99 * 1.5 };
+            quality.burumaMaxL = { inP90: inMaxLP90, outP90: outMaxLP90, coef: 1.5, threshold: inMaxLP90 * 1.5 };
+            checks.burumaAreaP99Growth = outAreaP99 <= inAreaP99 * 1.5;
+            checks.burumaMaxLP90Growth = outMaxLP90 <= inMaxLP90 * 1.5;
+
+            // 指尖突起形态：区域 |x|>8.0, 13.8<y<15.0 内突起 >0.08 的三角形数量 + 最大面积
+            const inTip = fingertipStats(origPos, origTri);
+            const outTip = fingertipStats(decPos, decTri);
+            quality.fingertip = { inCount: inTip.count, outCount: outTip.count, inMaxArea: inTip.maxArea, outMaxArea: outTip.maxArea, protrudeThreshold: FINGERTIP_PROTRUDE };
+            checks.fingertipProtrudeShape = outTip.count <= inTip.count && outTip.maxArea <= inTip.maxArea;
+
+            // 全局新增超尺寸三角形：输出 maxL > 输入全局 maxL p99，质心无法匹配输入固有巨型三角形 → 新增。
+            // 只计「跨曲面合并」（新三角形所在输出表面曲率 > OVERSIZE_CURVED_DEG）——平坦区新大三角形视觉
+            // 无害（fix6 实测 56 个新超尺寸中仅 4 个 >12°、0 个 >20°，全在平坦区；fix5 有 444 个跨曲面合并）。
+            const inMaxLP99Global = percentile(origTri.map((t) => triGeomVerts(origPos, t).maxL), 0.99);
+            const { count: oversizeCount, curvedCount } = countNewOversize(origPos, origTri, decPos, decTri, inMaxLP99Global, OVERSIZE_CURVED_DEG);
+            quality.oversize = { inputMaxLP99: inMaxLP99Global, newCount: oversizeCount, curvedNewCount: curvedCount, matchTol: OVERSIZE_MATCH_TOL, curvMinDeg: OVERSIZE_CURVED_DEG };
+            checks.noNewOversizeTriangles = curvedCount === 0;
+
+            // 非流形边（输出边共享 >2）
+            const nonManifold = countNonManifoldEdges(decTri);
+            quality.nonManifoldEdges = nonManifold;
+            checks.noNonManifoldEdges = nonManifold === 0;
+
+            // 空间无新增洞：限定袜子区域（全模型开放边界合法回缩，fix5 实测 41 属非洞，见 helper 注释）
+            const sockNewHoles = bMatOut
+                ? countNewSockBoundaryEdges(origPos, origTri, decPos, decTri, bMatOut)
+                : 1;
+            quality.sockNewHoles = sockNewHoles;
+            checks.noNewHoles = sockNewHoles <= 1;
+        }
+
         // ---------- 编排 ----------
         checkParseable();
         checkLockedVerts();
@@ -299,13 +565,19 @@ export function verifyFaces({
         checkNormals();
         checkMaterialHeader();
         checkRetention();
+        checkQuality();
 
-        const allGreen = Object.entries(checks).every(([k, v]) => (k === 'lockedCount' ? true : v === true));
+        // 质量优先（fix6-plan §5）：质量守卫把减面地板抬高（LOD50 floor 38686 > 名义目标 27114）时，
+        // reductionMet=false / triWithinTarget=false 属预期（「面数不一定要降很低，但破面和突出的面
+        // 不能忍」）。故 triWithinTarget 不进 ok（报告仍含 reductionRatio / targetTriangles 供观察）；
+        // 「无退化/法线/权重/材质/质量检查」等硬性质量项全绿才 ok=true。
+        const allGreen = Object.entries(checks).every(([k, v]) => (k === 'lockedCount' || k === 'triWithinTarget' || k === 'qualityChecksActive' ? true : v === true));
         report = {
             ok: allGreen,
             checks,
             errorCount,
             errors,
+            quality,
             stats: {
                 originalVertices: origVertices,
                 newVertices,
