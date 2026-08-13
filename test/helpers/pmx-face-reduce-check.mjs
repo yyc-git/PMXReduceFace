@@ -18,6 +18,48 @@ const require = createRequire(import.meta.url);
 const { MMDParser } = require('three/examples/jsm/libs/mmdparser.module.js');
 const parser = new MMDParser.Parser();
 
+// sliver 约束（从被测 qem.mjs import，单一来源）。
+// isValidCollapse 修复前后都存在（静态 import 安全）；SLIVER 阈值/判定/边长统计仅修复后导出，
+// 因此用动态 import + 防御性 fallback：修复后走 qem.mjs 单一来源；RED 验证时（临时 revert 到修复前
+// qem.mjs，无这些导出）降级到本地常量与实现，保证 helper 其余 12 场景仍可运行、仅新增 sliver 断言失败。
+import {
+    isValidCollapse,
+    linkConditionValid,
+    collapseCreatesHole,
+    collapseFoldOver,
+    buildVertexTris,
+} from '../../src/tool/pmx-face-reduce/qem.mjs';
+
+let SLIVER_ASPECT_MAX = 20;
+let SLIVER_MAXL_MIN = 2.0;
+let qemTriEdgeStats = null;
+let qemIsSliver = null;
+try {
+  const qem = await import('../../src/tool/pmx-face-reduce/qem.mjs');
+  if (typeof qem.SLIVER_ASPECT_MAX === 'number') SLIVER_ASPECT_MAX = qem.SLIVER_ASPECT_MAX;
+  if (typeof qem.SLIVER_MAXL_MIN === 'number') SLIVER_MAXL_MIN = qem.SLIVER_MAXL_MIN;
+  if (typeof qem.triEdgeStats === 'function') qemTriEdgeStats = qem.triEdgeStats;
+  if (typeof qem.isSliverTriangle === 'function') qemIsSliver = qem.isSliverTriangle;
+} catch (e) { /* 修复前 qem.mjs：本地常量/实现兜底（值固定为修复引入的 20/2.0） */ }
+
+// 边长统计（优先 qem.mjs；fallback 与 qem.triEdgeStats 实现一致）
+function triEdgeStats(p0, p1, p2) {
+  if (qemTriEdgeStats) return qemTriEdgeStats(p0, p1, p2);
+  const e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+  const e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]);
+  const e2 = Math.hypot(p0[0] - p2[0], p0[1] - p2[1], p0[2] - p2[2]);
+  const maxL = Math.max(e0, e1, e2);
+  const minL = Math.min(e0, e1, e2);
+  return { maxL, minL, aspect: minL > 1e-12 ? maxL / minL : Infinity };
+}
+
+// sliver 判定（优先 qem.mjs；fallback 用阈值常量）
+function isSliverTriangle(p0, p1, p2) {
+  if (qemIsSliver) return qemIsSliver(p0, p1, p2);
+  const s = triEdgeStats(p0, p1, p2);
+  return s.aspect >= SLIVER_ASPECT_MAX && s.maxL >= SLIVER_MAXL_MIN;
+}
+
 // ---------- 独立字节工具（不依赖被测 writer，避免自证） ----------
 const textBuffer = (s) => {
   const b = Buffer.from(s || '', 'utf16le');
@@ -44,6 +86,95 @@ const idxUnsigned = (v, size) => {
   return b;
 };
 const bufToAB = (buf) => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+
+// ---------- 通用无装饰 PMX 构造（几何测试用：圆管 sliver fixture 等） ----------
+function buildRawMeshPmx(positions, triList) {
+  const chunks = [];
+  chunks.push(Buffer.from('PMX '));
+  const ver = Buffer.alloc(4); ver.writeFloatLE(2.0, 0); chunks.push(ver);
+  chunks.push(Buffer.from([8, 0, 0, 2, 1, 1, 1, 1, 1]));
+  chunks.push(textBuffer('fixture')); chunks.push(textBuffer('')); chunks.push(textBuffer('')); chunks.push(textBuffer(''));
+  chunks.push(u32(positions.length));
+  for (const p of positions) {
+    chunks.push(f32s(p));
+    chunks.push(f32s([0, 1, 0]));
+    chunks.push(f32s([0, 0]));
+    chunks.push(u8(0));
+    chunks.push(idxSigned(0, 1));
+    chunks.push(f32s([1]));
+  }
+  chunks.push(u32(triList.length * 3));
+  for (const t of triList) for (const v of t) chunks.push(idxUnsigned(v, 2));
+  chunks.push(u32(1));
+  chunks.push(textBuffer('tex.png'));
+  const parts = [
+    textBuffer('mat'), textBuffer(''),
+    f32s([1, 1, 1, 1]), f32s([0.5, 0.5, 0.5]), f32s([20]), f32s([0.2, 0.2, 0.2]), u8(0xf),
+    f32s([0, 0, 0, 1]), f32s([1]),
+    idxSigned(-1, 1), idxSigned(-1, 1), u8(0), u8(1), u8(1), textBuffer(''),
+    u32(triList.length * 3),
+  ];
+  chunks.push(u32(1));
+  chunks.push(Buffer.concat(parts));
+  chunks.push(u32(0)); // bones
+  chunks.push(u32(0)); // morphs
+  chunks.push(u32(0)); // frames
+  chunks.push(u32(0)); // rigidBodies
+  chunks.push(u32(0)); // joints
+  return Buffer.concat(chunks);
+}
+
+// 圆管（手指/肢体类圆柱几何）：seg 段 × (rings+1) 环 = (seg+1)*(rings+1) 顶点 / seg*rings*2 三角形
+function buildTubePmx(seg = 24, len = 30, radius = 2, rings = 40) {
+  const positions = [];
+  const idx = (u, r) => r * (seg + 1) + u;
+  for (let r = 0; r <= rings; r++) {
+    const y = (r / rings) * len;
+    for (let u = 0; u <= seg; u++) {
+      const a = (u / seg) * Math.PI * 2;
+      positions.push([Math.cos(a) * radius, y, Math.sin(a) * radius]);
+    }
+  }
+  const tris = [];
+  for (let r = 0; r < rings; r++) for (let u = 0; u < seg; u++) {
+    const a = idx(u, r), b = idx(u + 1, r), d = idx(u, r + 1), e = idx(u + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
+  }
+  return buildRawMeshPmx(positions, tris);
+}
+
+// 长条 sliver 计数（aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN，阈值与 qem.mjs 单一来源）
+function countLongSlivers(m) {
+  const v = m.vertices;
+  let count = 0;
+  let worst = { aspect: 0, maxL: 0 };
+  for (const f of m.faces) {
+    const [a, b, c] = f.indices;
+    const s = triEdgeStats(v[a].position, v[b].position, v[c].position);
+    if (s.aspect >= SLIVER_ASPECT_MAX && s.maxL >= SLIVER_MAXL_MIN) {
+      count++;
+      if (s.aspect > worst.aspect) worst = { aspect: s.aspect, maxL: s.maxL };
+    }
+  }
+  return { count, worst };
+}
+
+// 边共享数统计：返回 { boundary, nonManifold }（边界边=共享1，非流形边=共享>2）。
+// 用于洞回归（P0）断言：减面输出不得产生非流形边、边界边集合不得扩大。
+function edgeManifoldStats(m) {
+  const cnt = new Map();
+  const key = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+  for (const f of m.faces) {
+    const [a, b, c] = f.indices;
+    for (const [x, y] of [[a, b], [b, c], [c, a]]) {
+      const k = key(x, y);
+      cnt.set(k, (cnt.get(k) || 0) + 1);
+    }
+  }
+  let boundary = 0, nonManifold = 0;
+  for (const [, c] of cnt) { if (c === 1) boundary++; else if (c > 2) nonManifold++; }
+  return { boundary, nonManifold };
+}
 
 // ---------- 合成 fixture PMX（PMX 2.0，UTF-16LE，vertexIndexSize=2 其余 1） ----------
 // 网格：列数 = W+1 = 51（第 50 列与第 0 列位置重合、UV.x=1.0 的接缝列），行数 = H = 40
@@ -229,6 +360,123 @@ facts.originalTriangles = fixtureModel.faces.length;
 facts.originalMaterials = fixtureModel.materials.length;
 facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount);
 
+// ---------- sliver 回归（A 单元级）：直接调用 qem.mjs 的 isValidCollapse ----------
+// A1：构造「折叠后新三角形为细长条（aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN）」的折叠候选。
+// 三角 [u=0, B=1, C=2]，仅含端点 u（v=3 不在三角形内，折叠后该三角形变成 [newPos, B, C]）。
+// newPos=(20,0.01,0) 使新三角形三边 ≈20/20/0.01 → aspect≈2000 且 maxL=20 → 必为 sliver。
+// 修复前（isValidCollapse 只查退化/翻转）→ 返回 true → 本断言 RED；修复后 → 返回 false → GREEN。
+{
+  const positions = [
+    [0, 0.5, 0],  // 0 = u（折叠端点）
+    [0, 0, 0],    // 1 = B
+    [0.01, 0, 0], // 2 = C
+    [0, 0, 0],    // 3 = v（折叠端点，不在三角形内）
+  ];
+  const newPos = [20, 0.01, 0];
+  const s = triEdgeStats(newPos, positions[1], positions[2]);
+  facts.unitSliverCollapse = {
+    rejected: isValidCollapse(positions, [0, 1, 2], 0, 3, newPos) === false,
+    resultIsSliver: isSliverTriangle(newPos, positions[1], positions[2]) === true,
+    aspect: s.aspect,
+    maxL: s.maxL,
+  };
+}
+// A2：正常折叠（新三角形 maxL<2，aspect 低）必须返回 true，防止 sliver 约束误杀。
+{
+  const positions = [
+    [0, 0, 0], // 0 = u
+    [1, 0, 0], // 1 = B
+    [0, 1, 0], // 2 = C
+    [0, 0, 0], // 3 = v
+  ];
+  const newPos = [0.3, 0.3, 0];
+  const s = triEdgeStats(newPos, positions[1], positions[2]);
+  facts.unitNormalCollapse = {
+    accepted: isValidCollapse(positions, [0, 1, 2], 0, 3, newPos) === true,
+    resultNotSliver: isSliverTriangle(newPos, positions[1], positions[2]) === false,
+    aspect: s.aspect,
+    maxL: s.maxL,
+  };
+}
+// A3：手指级窄条（第三轮回归）—— 折叠后新三角形 maxL ∈ [0.5, 1.0) 且 aspect≥SLIVER_ASPECT_MAX。
+// 手部实测的 8 个窄条 aspect=11、maxL=0.51~0.56（< 1.0）：SLIVER_MAXL_MIN=1.0 时守卫放行它们。
+// 本候选 newPos=[0,0.05,0] 使新三角形三边 ≈0.602/0.6/0.05 → aspect≈12 且 maxL≈0.602。
+// 收紧到 0.5 后：isValidCollapse 必须拒绝（返回 false）；若把 SLIVER_MAXL_MIN 改回 1.0，本候选
+// maxL 0.602 < 1.0 → 守卫放行（返回 true）→ 本断言 RED（精确抓到「门槛太松」这一 bug）。
+{
+  const positions = [
+    [0, 0, 0],       // 0 = u（折叠端点）
+    [0.6, 0, 0],     // 1 = B
+    [0.6, 0.05, 0],  // 2 = C（B-C 边 = 0.05，窄条宽度）
+    [0, 0, 0],       // 3 = v（折叠端点，不在三角形内）
+  ];
+  const newPos = [0, 0.05, 0];
+  const s = triEdgeStats(newPos, positions[1], positions[2]);
+  facts.unitSliverBand = {
+    rejected: isValidCollapse(positions, [0, 1, 2], 0, 3, newPos) === false,
+    resultIsSliver: isSliverTriangle(newPos, positions[1], positions[2]) === true,
+    aspect: s.aspect,
+    maxL: s.maxL,
+  };
+}
+
+// ---------- 拓扑守卫单元测试（P0 洞：link condition + 洞检测） ----------
+// B1：菱形（diamond）—— u/v 公共邻居 {a,b,w} 多于边(u,v) 对立顶点 {a,b} → link condition 违反。
+// 折叠会把两条边界边缝合成内部边 / 制造非流形，linkConditionValid 必须返回 false。
+{
+  const tris = [[0, 1, 2], [0, 1, 3], [0, 4, 5], [1, 4, 6]];
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(7, tris, aliveT);
+  facts.unitLinkViolated = {
+    rejected: linkConditionValid(tris, aliveT, vTris, 0, 1) === false,
+  };
+}
+// B2：rim-corner —— 内部边 (0,1) 一端（顶点1）落在边界上，折叠后 (0,2) 由内部变边界 = 洞。
+// linkConditionValid 仍为 true（公共邻居恰好等于对立顶点），但 collapseCreatesHole 必须返回 true。
+{
+  const tris = [[0, 1, 2], [0, 1, 3], [0, 2, 4], [0, 3, 5]];
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(6, tris, aliveT);
+  facts.unitHoleCreated = {
+    rejected: collapseCreatesHole(tris, aliveT, vTris, 0, 1) === true,
+    linkPasses: linkConditionValid(tris, aliveT, vTris, 0, 1) === true,
+  };
+}
+// B3：5×5 网格中心边折叠 —— 正常折叠不误杀（link=true / hole=false / fold=false）。
+{
+  const N = 5;
+  const positions = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) positions.push([c, r, 0]);
+  const idx = (c, r) => r * N + c;
+  const tris = [];
+  for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+    const a = idx(c, r), b = idx(c + 1, r), d = idx(c, r + 1), e = idx(c + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
+  }
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(positions.length, tris, aliveT);
+  facts.unitTopologyNormal = {
+    linkAccepted: linkConditionValid(tris, aliveT, vTris, 12, 13) === true,
+    holeAccepted: collapseCreatesHole(tris, aliveT, vTris, 12, 13) === false,
+    foldAccepted: collapseFoldOver(positions, tris, aliveT, vTris, 12, 13, [2.5, 2, 0]) === false,
+  };
+}
+
+// ---------- 折叠翻转守卫单元测试（P2 fold-over） ----------
+// C1：T1=(0,2,3) 与 T2=(2,4,3) 共边 (2,3)，法线均 +z。折叠 u=0 → (0.5,-1,0) 把 T1 翻到 -y 侧
+// → T1 新法线 -z 与 T2 夹角 180°（> FOLD_ANGLE_MAX_DEG 且原始夹角 0° 正常）→ collapseFoldOver 必须 true。
+// C2：折叠到原位附近（不翻转）→ false。
+{
+  const positions = [[0.5, 1, 0], [10, 10, 10], [0, 0, 0], [1, 0, 0], [0.5, -1, 0]];
+  const tris = [[0, 2, 3], [2, 4, 3]];
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(5, tris, aliveT);
+  facts.unitFoldOver = {
+    rejected: collapseFoldOver(positions, tris, aliveT, vTris, 0, 1, [0.5, -1, 0]) === true,
+    normalAccepted: collapseFoldOver(positions, tris, aliveT, vTris, 0, 1, [0.5, 1, 0.0001]) === false,
+  };
+}
+
 // 原文件字节不变
 const hashOf = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
 facts.originalHashBefore = hashOf(inputPath);
@@ -369,6 +617,72 @@ function parseOutput(p) {
       seen.add(key);
     }
     facts.degenNoDegenerate = allValid;
+  }
+}
+
+// sliver 回归（B 集成级）：合成管状 fixture（手指/肢体类圆柱几何）减面输出守卫。
+// 圆管 seg=24 len=30 R=2 rings=40 → 25×41=1025 顶点 / 24×40×2=1920 三角形，输入无 sliver。
+// target-ratio 0.5 时修复前的 QEM 在管壁产生「细且长」跨周长 sliver（实测 101 个、最差 aspect≈46 maxL≈24），
+// 修复后为 0 → 断言「输出无长条 sliver」具备真实 RED 能力。
+{
+  const tubeBuf = buildTubePmx();
+  const tubeInput = path.join(tmpDir, 'sliver-tube.pmx');
+  const tubeOut = outPath('sliver-tube');
+  fs.writeFileSync(tubeInput, tubeBuf);
+  const tubeIn = parser.parsePmx(bufToAB(tubeBuf), false);
+  facts.sliverTubeInputTri = tubeIn.faces.length;
+  facts.sliverTubeInSliverCount = countLongSlivers(tubeIn).count;
+  const tubeInManifold = edgeManifoldStats(tubeIn);
+  facts.sliverTubeInBoundary = tubeInManifold.boundary;
+  facts.sliverTubeInNonManifold = tubeInManifold.nonManifold;
+  const r = runReduce(['--input', tubeInput, '--output', tubeOut, '--target-ratio', '0.5', '--lock-morph', 'false', '--lock-seams', 'false', '--min-retention', '0', '--lock-small-materials', 'false']);
+  facts.sliverTubeExit = r.exit;
+  facts.sliverTubeStats = r.stats;
+  const tubeOutModel = parseOutput(tubeOut);
+  facts.sliverTubeParseable = !!(tubeOutModel && !tubeOutModel.parseError);
+  facts.sliverTubeOutSliverCount = -1;
+  facts.sliverTubeOutWorst = { aspect: 0, maxL: 0 };
+  facts.sliverTubeOutTri = 0;
+  facts.sliverTubeOutBoundary = -1;
+  facts.sliverTubeOutNonManifold = -1;
+  if (tubeOutModel && !tubeOutModel.parseError) {
+    const c = countLongSlivers(tubeOutModel);
+    facts.sliverTubeOutSliverCount = c.count;
+    facts.sliverTubeOutWorst = c.worst;
+    facts.sliverTubeOutTri = tubeOutModel.faces.length;
+    const om = edgeManifoldStats(tubeOutModel);
+    facts.sliverTubeOutBoundary = om.boundary;
+    facts.sliverTubeOutNonManifold = om.nonManifold;
+  }
+}
+
+// sliver 回归（C 集成级）：细管 fixture 模拟手指（第三轮）。手指直径约 0.3-0.5、长度约 2，
+// 用 R=0.3 管径 + seg=16 段 + rings=20 环（高 2）贴近手指比例且网格够密。
+// 输入无 sliver（aspect≈1.5）。target-ratio 0.5 收紧后（SLIVER_MAXL_MIN=0.5）输出 0 个
+// aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN 的窄条。
+// RED 能力：禁用守卫（isValidCollapse 去掉 sliver 检查）后，细管减面会在管壁产生跨长度窄条
+// （实测 96 个、最差 aspect≈20 maxL≈2.0），本断言失败 → 恢复守卫后全绿。
+{
+  const thinBuf = buildTubePmx(16, 2, 0.3, 20);
+  const thinInput = path.join(tmpDir, 'thin-tube.pmx');
+  const thinOut = outPath('thin-tube');
+  fs.writeFileSync(thinInput, thinBuf);
+  const thinIn = parser.parsePmx(bufToAB(thinBuf), false);
+  facts.thinTubeInputTri = thinIn.faces.length;
+  facts.thinTubeInSliverCount = countLongSlivers(thinIn).count;
+  const r = runReduce(['--input', thinInput, '--output', thinOut, '--target-ratio', '0.5', '--lock-morph', 'false', '--lock-seams', 'false', '--min-retention', '0', '--lock-small-materials', 'false']);
+  facts.thinTubeExit = r.exit;
+  facts.thinTubeStats = r.stats;
+  const thinOutModel = parseOutput(thinOut);
+  facts.thinTubeParseable = !!(thinOutModel && !thinOutModel.parseError);
+  facts.thinTubeOutSliverCount = -1;
+  facts.thinTubeOutWorst = { aspect: 0, maxL: 0 };
+  facts.thinTubeOutTri = 0;
+  if (thinOutModel && !thinOutModel.parseError) {
+    const c = countLongSlivers(thinOutModel);
+    facts.thinTubeOutSliverCount = c.count;
+    facts.thinTubeOutWorst = c.worst;
+    facts.thinTubeOutTri = thinOutModel.faces.length;
   }
 }
 

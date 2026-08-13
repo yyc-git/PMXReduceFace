@@ -134,6 +134,48 @@ interface Facts {
   degenParseable: boolean;
   degenTriCount: number;
   degenNoDegenerate: boolean;
+  unitSliverCollapse: {
+    rejected: boolean;
+    resultIsSliver: boolean;
+    aspect: number;
+    maxL: number;
+  };
+  unitNormalCollapse: {
+    accepted: boolean;
+    resultNotSliver: boolean;
+    aspect: number;
+    maxL: number;
+  };
+  unitSliverBand: {
+    rejected: boolean;
+    resultIsSliver: boolean;
+    aspect: number;
+    maxL: number;
+  };
+  unitLinkViolated: { rejected: boolean };
+  unitHoleCreated: { rejected: boolean; linkPasses: boolean };
+  unitTopologyNormal: { linkAccepted: boolean; holeAccepted: boolean; foldAccepted: boolean };
+  unitFoldOver: { rejected: boolean; normalAccepted: boolean };
+  sliverTubeInputTri: number;
+  sliverTubeInSliverCount: number;
+  sliverTubeInBoundary: number;
+  sliverTubeInNonManifold: number;
+  sliverTubeExit: number;
+  sliverTubeStats: ReduceStats | null;
+  sliverTubeParseable: boolean;
+  sliverTubeOutSliverCount: number;
+  sliverTubeOutWorst: { aspect: number; maxL: number };
+  sliverTubeOutTri: number;
+  sliverTubeOutBoundary: number;
+  sliverTubeOutNonManifold: number;
+  thinTubeInputTri: number;
+  thinTubeInSliverCount: number;
+  thinTubeExit: number;
+  thinTubeStats: ReduceStats | null;
+  thinTubeParseable: boolean;
+  thinTubeOutSliverCount: number;
+  thinTubeOutWorst: { aspect: number; maxL: number };
+  thinTubeOutTri: number;
 }
 
 function runHelper(): Facts {
@@ -396,6 +438,150 @@ defineFeature(feature, (test) => {
         });
         and(/^输出无退化三角形（面积大于 1e-9）且无重复索引三角形$/, () => {
             expect(facts.degenNoDegenerate).toBe(true);
+        });
+    });
+
+    test('isValidCollapse 拒绝会产生细长条（sliver）三角形的折叠', ({ given, when, then, and }) => {
+        given(/^构造折叠后新三角形 aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN 的折叠候选（u=0 折叠到 \[20,0\.01,0\]）$/, () => {
+            facts = null;
+        });
+        when(/^对该候选直接调用 qem\.mjs 的 isValidCollapse$/, () => {
+            facts = runHelper();
+        });
+        then(/^返回 false（该折叠被拒绝）$/, () => {
+            expect(facts.unitSliverCollapse.rejected).toBe(true);
+        });
+        and(/^折叠结果三角形确实被 isSliverTriangle 判定为 sliver（候选构造正确，aspect 与 maxL 均达标）$/, () => {
+            expect(facts.unitSliverCollapse.resultIsSliver).toBe(true);
+            expect(facts.unitSliverCollapse.aspect).toBeGreaterThanOrEqual(20);
+            expect(facts.unitSliverCollapse.maxL).toBeGreaterThanOrEqual(2);
+        });
+        and(/^正常折叠（新三角形 aspect<20）返回 true（sliver 约束不误杀）$/, () => {
+            expect(facts.unitNormalCollapse.accepted).toBe(true);
+        });
+        and(/^正常折叠结果三角形不被 isSliverTriangle 判定为 sliver$/, () => {
+            expect(facts.unitNormalCollapse.resultNotSliver).toBe(true);
+            expect(facts.unitNormalCollapse.aspect).toBeLessThan(20);
+        });
+    });
+
+    test('isValidCollapse 拒绝 maxL 在 0.5~1.0 区间的手指级窄条折叠', ({ given, when, then, and }) => {
+        given(/^构造折叠后新三角形 maxL∈\[0\.5,1\.0\) 且 aspect≥SLIVER_ASPECT_MAX 的折叠候选（u=0 折叠到 \[0,0\.05,0\]）$/, () => {
+            facts = null;
+        });
+        when(/^对该候选直接调用 qem\.mjs 的 isValidCollapse$/, () => {
+            facts = runHelper();
+        });
+        then(/^返回 false（该折叠被拒绝，收紧到 0\.5 生效）$/, () => {
+            expect(facts.unitSliverBand.rejected).toBe(true);
+        });
+        and(/^折叠结果三角形确实被 isSliverTriangle 判定为 sliver（maxL 在 0\.5~1\.0 区间）$/, () => {
+            expect(facts.unitSliverBand.resultIsSliver).toBe(true);
+            expect(facts.unitSliverBand.maxL).toBeGreaterThanOrEqual(0.5);
+            expect(facts.unitSliverBand.maxL).toBeLessThan(1.0);
+            expect(facts.unitSliverBand.aspect).toBeGreaterThanOrEqual(10);
+        });
+    });
+
+    test('减面输出不存在长条 sliver 三角形（合成管状 fixture）', ({ given, when, then, and }) => {
+        given(/^合成管状 fixture PMX 已生成（1025 顶点 \/ 1920 三角形，输入无 sliver）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出中不存在 aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN 的三角形（阈值 import 自 qem\.mjs）$/, () => {
+            expect(facts.sliverTubeExit).toBe(0);
+            expect(facts.sliverTubeParseable).toBe(true);
+            expect(facts.sliverTubeOutSliverCount).toBe(0);
+        });
+        and(/^输出文件可解析且 reduce 退出码为 0$/, () => {
+            expect(facts.sliverTubeOutTri).toBeGreaterThan(0);
+            expect(facts.sliverTubeStats).toBeTruthy();
+            expect(facts.sliverTubeStats!.newTriangles).toBeLessThan(facts.sliverTubeInputTri);
+        });
+        and(/^输入 fixture 自身无长条 sliver（断言前提成立）$/, () => {
+            expect(facts.sliverTubeInSliverCount).toBe(0);
+        });
+    });
+
+    test('减面输出不存在手指级窄条 sliver 三角形（细管 fixture）', ({ given, when, then, and }) => {
+        given(/^合成细管 fixture PMX 已生成（R=0\.3 管径 \/ 16 段 × 20 环，输入无 sliver）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出中不存在 aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN 的三角形（阈值 import 自 qem\.mjs）$/, () => {
+            expect(facts.thinTubeExit).toBe(0);
+            expect(facts.thinTubeParseable).toBe(true);
+            expect(facts.thinTubeOutSliverCount).toBe(0);
+        });
+        and(/^输出文件可解析且 reduce 退出码为 0$/, () => {
+            expect(facts.thinTubeOutTri).toBeGreaterThan(0);
+            expect(facts.thinTubeStats).toBeTruthy();
+            expect(facts.thinTubeStats!.newTriangles).toBeLessThan(facts.thinTubeInputTri);
+        });
+        and(/^输入 fixture 自身无长条 sliver（断言前提成立）$/, () => {
+            expect(facts.thinTubeInSliverCount).toBe(0);
+        });
+    });
+
+    test('拓扑守卫拒绝会产生洞或非流形边的折叠', ({ given, when, then, and }) => {
+        given(/^构造 link condition 违反的折叠候选（菱形，u\/v 公共邻居多于对立顶点）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 linkConditionValid$/, () => {
+            facts = runHelper();
+        });
+        then(/^返回 false（该折叠被拒绝，防非流形\/缝合）$/, () => {
+            expect(facts.unitLinkViolated.rejected).toBe(true);
+        });
+        and(/^构造内部边变边界的折叠候选（rim corner，一端落在边界上）$/, () => {
+            // facts 已包含该候选（helper 内部构造）
+        });
+        and(/^直接调用 collapseCreatesHole 返回 true（洞被拒绝）$/, () => {
+            expect(facts.unitHoleCreated.rejected).toBe(true);
+        });
+        and(/^linkConditionValid 对该候选仍返回 true（证明洞检测是 link condition 的必要补充）$/, () => {
+            expect(facts.unitHoleCreated.linkPasses).toBe(true);
+        });
+        and(/^5×5 网格中心边折叠（正常折叠）link\/hole\/fold 守卫均不误杀$/, () => {
+            expect(facts.unitTopologyNormal.linkAccepted).toBe(true);
+            expect(facts.unitTopologyNormal.holeAccepted).toBe(true);
+            expect(facts.unitTopologyNormal.foldAccepted).toBe(true);
+        });
+    });
+
+    test('折叠翻转守卫拒绝 fold-over 折叠', ({ given, when, then, and }) => {
+        given(/^构造折叠后新三角形相对邻接三角形法线翻转的折叠候选（共边三角形翻到对侧）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseFoldOver$/, () => {
+            facts = runHelper();
+        });
+        then(/^返回 true（该折叠被拒绝）$/, () => {
+            expect(facts.unitFoldOver.rejected).toBe(true);
+        });
+        and(/^折叠到原位附近（不翻转）返回 false（fold-over 守卫不误杀）$/, () => {
+            expect(facts.unitFoldOver.normalAccepted).toBe(true);
+        });
+    });
+
+    test('减面输出不存在非流形边且边界边集合不扩大（合成管状 fixture）', ({ given, when, then, and }) => {
+        given(/^合成管状 fixture PMX 已生成（1025 顶点 \/ 1920 三角形，输入无 sliver）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^输出无共享数大于 2 的非流形边$/, () => {
+            expect(facts.sliverTubeExit).toBe(0);
+            expect(facts.sliverTubeInNonManifold).toBe(0);
+            expect(facts.sliverTubeOutNonManifold).toBe(0);
+        });
+        and(/^输出边界边数量不超过输入边界边数量$/, () => {
+            expect(facts.sliverTubeOutBoundary).toBeLessThanOrEqual(facts.sliverTubeInBoundary);
         });
     });
 });

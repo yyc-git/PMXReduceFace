@@ -160,6 +160,11 @@ export function reduceFaces({
         reductionMet: newTriangles.length <= targetTri,
         collapses: stats.collapses,
         rejected: stats.rejected,
+        shapeRejects: stats.shapeRejects,
+        linkRejects: stats.linkRejects,
+        holeRejects: stats.holeRejects,
+        foldOverRejects: stats.foldOverRejects,
+        materialRejects: stats.materialRejects,
         durationMs: Date.now() - t0,
         perMaterial: model.materials.map((m, i) => ({ index: i, name: m.name, origTri: m.faceCount, newTri: materialTriCounts[i] })),
     };

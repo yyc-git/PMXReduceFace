@@ -93,3 +93,70 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     Then 输出三角形数为 3900（2 个非法三角形被丢弃）
     And 输出无退化三角形（面积大于 1e-9）且无重复索引三角形
 
+  # ★ sliver 回归（A 单元级）：isValidCollapse 必须拒绝「折叠后产生细长条三角形」的折叠候选
+  # RED 能力：把 qem.mjs 的 sliver 约束 revert（isValidCollapse 退化为只查退化/翻转）后，本场景立即失败
+  Scenario: isValidCollapse 拒绝会产生细长条（sliver）三角形的折叠
+    Given 构造折叠后新三角形 aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN 的折叠候选（u=0 折叠到 [20,0.01,0]）
+    When 对该候选直接调用 qem.mjs 的 isValidCollapse
+    Then 返回 false（该折叠被拒绝）
+    And 折叠结果三角形确实被 isSliverTriangle 判定为 sliver（候选构造正确，aspect 与 maxL 均达标）
+    And 正常折叠（新三角形 aspect<20）返回 true（sliver 约束不误杀）
+    And 正常折叠结果三角形不被 isSliverTriangle 判定为 sliver
+
+  # ★ sliver 回归（A2 单元级，第三轮收紧）：isValidCollapse 必须拒绝 maxL∈[0.5,1.0) 的手指级窄条折叠
+  # 手部实测窄条 maxL=0.51~0.56（<1.0）：SLIVER_MAXL_MIN=1.0 时守卫放行 → 手指多余面。
+  # RED 能力：把 SLIVER_MAXL_MIN 临时改回 1.0 后，本候选 maxL≈0.602<1.0 → 守卫放行（返回 true）→ 本断言立即失败
+  Scenario: isValidCollapse 拒绝 maxL 在 0.5~1.0 区间的手指级窄条折叠
+    Given 构造折叠后新三角形 maxL∈[0.5,1.0) 且 aspect≥SLIVER_ASPECT_MAX 的折叠候选（u=0 折叠到 [0,0.05,0]）
+    When 对该候选直接调用 qem.mjs 的 isValidCollapse
+    Then 返回 false（该折叠被拒绝，收紧到 0.5 生效）
+    And 折叠结果三角形确实被 isSliverTriangle 判定为 sliver（maxL 在 0.5~1.0 区间）
+
+  # ★ sliver 回归（B 集成级）：合成管状 fixture 减面输出无长条 sliver（输出守卫）
+  # 圆管（手指/肢体类圆柱几何）seg=24 len=30 R=2 rings=40 → 1025 顶点 / 1920 三角形，输入无 sliver；
+  # RED 能力：revert qem.mjs 后 target-ratio 0.5 输出实测 101 个 sliver（最差 aspect≈46 maxL≈24）→ 本断言失败；修复后输出 0 → 通过
+  Scenario: 减面输出不存在长条 sliver 三角形（合成管状 fixture）
+    Given 合成管状 fixture PMX 已生成（1025 顶点 / 1920 三角形，输入无 sliver）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then 输出中不存在 aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN 的三角形（阈值 import 自 qem.mjs）
+    And 输出文件可解析且 reduce 退出码为 0
+    And 输入 fixture 自身无长条 sliver（断言前提成立）
+
+  # ★ sliver 回归（C 集成级，第三轮收紧）：细管 fixture 模拟手指减面输出无手指级窄条
+  # 手指直径约 0.3-0.5、长度约 2，用 R=0.3 管径 + 16 段 × 20 环（高 2）贴近手指比例且网格够密；
+  # 输入无 sliver（aspect≈1.5）。收紧后（SLIVER_MAXL_MIN=0.5）target-ratio 0.5 输出 0 窄条。
+  # RED 能力：禁用守卫（isValidCollapse 去掉 sliver 检查）后细管减面在管壁产生跨长度窄条（实测 96 个、最差 aspect≈20 maxL≈2.0）→ 本断言失败
+  Scenario: 减面输出不存在手指级窄条 sliver 三角形（细管 fixture）
+    Given 合成细管 fixture PMX 已生成（R=0.3 管径 / 16 段 × 20 环，输入无 sliver）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then 输出中不存在 aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN 的三角形（阈值 import 自 qem.mjs）
+    And 输出文件可解析且 reduce 退出码为 0
+    And 输入 fixture 自身无长条 sliver（断言前提成立）
+
+  # ★ 洞回归（P0 单元级）：link condition + 洞检测拒绝破坏流形性的折叠
+  # RED 能力：把 qem.mjs 的 linkConditionValid/collapseCreatesHole 退化为恒 true/false 后，本场景立即失败
+  Scenario: 拓扑守卫拒绝会产生洞或非流形边的折叠
+    Given 构造 link condition 违反的折叠候选（菱形，u/v 公共邻居多于对立顶点）
+    When 直接调用 qem.mjs 的 linkConditionValid
+    Then 返回 false（该折叠被拒绝，防非流形/缝合）
+    And 构造内部边变边界的折叠候选（rim corner，一端落在边界上）
+    And 直接调用 collapseCreatesHole 返回 true（洞被拒绝）
+    And linkConditionValid 对该候选仍返回 true（证明洞检测是 link condition 的必要补充）
+    And 5×5 网格中心边折叠（正常折叠）link/hole/fold 守卫均不误杀
+
+  # ★ 折叠翻转回归（P2 单元级）：折叠后新三角形与邻接法线夹角突变 → 拒绝
+  # RED 能力：把 qem.mjs 的 collapseFoldOver 退化为恒 false 后，本场景立即失败
+  Scenario: 折叠翻转守卫拒绝 fold-over 折叠
+    Given 构造折叠后新三角形相对邻接三角形法线翻转的折叠候选（共边三角形翻到对侧）
+    When 直接调用 qem.mjs 的 collapseFoldOver
+    Then 返回 true（该折叠被拒绝）
+    And 折叠到原位附近（不翻转）返回 false（fold-over 守卫不误杀）
+
+  # ★ 洞回归（P0 集成级）：薄壳管状 fixture 减面输出无非流形边、边界不扩大
+  # 圆管是开放薄壳（接缝 + 上下环为边界），类比袜子/内裤开放薄壳；守卫应保证边界边只减不增、无非流形
+  Scenario: 减面输出不存在非流形边且边界边集合不扩大（合成管状 fixture）
+    Given 合成管状 fixture PMX 已生成（1025 顶点 / 1920 三角形，输入无 sliver）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then 输出无共享数大于 2 的非流形边
+    And 输出边界边数量不超过输入边界边数量
+

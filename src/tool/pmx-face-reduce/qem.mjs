@@ -11,6 +11,30 @@ export { computeQuadrics, solveQuadric };
 
 const DEGENERATE_AREA = 1e-9;
 const BOUNDARY_PENALTY = 5.0;
+// 近退化边阈值：三角形存在边长 < 该值的「共点边」时视为网格缺陷（叠放/共点几何），
+// 折叠清理此类三角形不算「造洞」（见 collapseStep 的洞守卫豁免）。
+const NEAR_DEGENERATE_EDGE = 1e-4;
+// sliver（细长条）三角形约束：折叠后三角形 aspect（最长边/最短边）过高且最长边过长时，
+// 该折叠会制造视觉致命的「长条/多余三角形」（跨区域长条 → 破面感）。
+// 阈值选择依据（scripts/diag-sliver.mjs / diag-finger2.mjs 实测）：
+// - 第一轮（aspect≥20 且 maxL≥2）已消灭「长条」（maxL≥2）——原始模型此形态为 0；
+// - 但头部仍残留「短长条」：LOD25 里 aspect≥20 的三角形 maxL 集中在 1.1~1.9（比第一轮前短），
+//   即减面把长条从 maxL≈19 压到 1~2 但仍可见；
+// - 更严档位量化：原始模型 aspect≥10 且 maxL≥1 的三角形仅 154/54228（0.28%，集中在
+//   2000_Body all 近退化 110 + BurumaSet 布料边 38 + Hair 6，均非头部透明片），属「极少」；
+//   减面引入的短长条（LOD25 209 个）远多于原始固有（154），收紧可显著减少。
+// - 第三轮（兄弟反馈：小指/无名指仍有多余面）：收紧到 maxL≥1.0 后，手部区域
+//   （|x|>4.5, y 9-18）原始模型 aspect>10 三角形为 0（8510 个手部三角形全 aspect≤10），
+//   但 LOD50 输出新增 8 个 aspect=11 窄长条（maxL=0.51~0.56 < 1.0）→ 门槛太松，放行了它们。
+//   手指直径约 0.3-0.5，maxL≈0.5 的窄长条在手指上视觉非常明显。原始模型全局 maxL≥0.5 的
+//   aspect≥10 三角形仅 392/54228（0.72%，集中在袜子位/胸口的固有 sliver），收紧到 0.5 影响小。
+// 故收紧到「aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN」，在消灭减面引入窄长条的同时
+// 对原始固有细片影响极小（原始固有 sliver 是「存在」不是「折叠产生」，守卫不删它们）。
+export const SLIVER_ASPECT_MAX = 10;
+export const SLIVER_MAXL_MIN = 0.5;
+// 折叠翻转（fold-over）阈值：折叠后受影响三角形与其相邻三角形法线夹角超过该角度（且原始夹角正常）
+// 视为「折叠回自身/翻转」，产生视觉上冒出的多余面片（手指细长圆柱高曲率区典型）。
+export const FOLD_ANGLE_MAX_DEG = 120;
 // 材质保护：原始三角形数 ≤ SMALL_MATERIAL_TRI 的材质被视为「小材质」，完全不减面（顶点全锁）
 // （verify.mjs 从本模块 import，保证双维护单一来源）
 export const SMALL_MATERIAL_TRI = 500;
@@ -109,8 +133,31 @@ function triNormal(p0, p1, p2) {
 }
 
 /**
- * 判定将三角形 tri 中顶点 u/v 替换为 newPos 后是否仍有效（非退化、非法线翻转）。
- * 用于形状惩罚。
+ * 三角形三边长度统计：最长边 maxL、最短边 minL、aspect = maxL/minL。
+ * aspect 用边长比度量细长程度（与 scripts/diag-sliver.mjs 一致）；minL≈0 时 aspect=Infinity。
+ */
+export function triEdgeStats(p0, p1, p2) {
+    const e0 = Math.hypot(p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2]);
+    const e1 = Math.hypot(p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2]);
+    const e2 = Math.hypot(p0[0] - p2[0], p0[1] - p2[1], p0[2] - p2[2]);
+    const maxL = Math.max(e0, e1, e2);
+    const minL = Math.min(e0, e1, e2);
+    return { maxL, minL, aspect: minL > 1e-12 ? maxL / minL : Infinity };
+}
+
+/**
+ * 是否「细且长」sliver 三角形：aspect ≥ SLIVER_ASPECT_MAX 且 maxL ≥ SLIVER_MAXL_MIN。
+ * 该三角形在渲染上是视觉致命的细长条/多余三角（跨区域长条）；原始模型的细短发丝级
+ * sliver（maxL < SLIVER_MAXL_MIN）不满足条件，不会被误判。
+ */
+export function isSliverTriangle(p0, p1, p2) {
+    const s = triEdgeStats(p0, p1, p2);
+    return s.aspect >= SLIVER_ASPECT_MAX && s.maxL >= SLIVER_MAXL_MIN;
+}
+
+/**
+ * 判定将三角形 tri 中顶点 u/v 替换为 newPos 后是否仍有效（非退化、非法线翻转、非细长条 sliver）。
+ * 用于折叠前的形状校验。
  * @param {number[][]} positions
  * @param {number[]} tri [a,b,c]
  * @param {number} u 折叠端点
@@ -126,7 +173,151 @@ export function isValidCollapse(positions, tri, u, v, newPos) {
     const on = triNormal(old[0], old[1], old[2]);
     const nn = triNormal(cur[0], cur[1], cur[2]);
     const dot = on[0] * nn[0] + on[1] * nn[1] + on[2] * nn[2];
-    return dot > 0;
+    if (dot <= 0) return false;
+    // sliver 约束：拒绝折叠后产生「细且长」三角形（aspect≥SLIVER_ASPECT_MAX 且 maxL≥SLIVER_MAXL_MIN）的候选。
+    // 否则 QEM 只优化几何误差（点到面距离），细长条面积≈0 → 误差度量认为「无损失」，
+    // 但视觉上是冒出的长条/多余三角（兄弟反馈的破面 + 长条现象根因）。
+    if (isSliverTriangle(cur[0], cur[1], cur[2])) return false;
+    return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 拓扑 / 翻转守卫（折叠前校验）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 构建顶点→三角形邻接表。collapseMesh 内部维护 vTris 复用此结构；测试/诊断从 tris 自建。
+ * @param {number} vertexCount
+ * @param {number[][]} tris
+ * @param {Uint8Array} [aliveT]
+ */
+export function buildVertexTris(vertexCount, tris, aliveT) {
+    const vTris = new Array(vertexCount);
+    for (let i = 0; i < vertexCount; i++) vTris[i] = [];
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (aliveT && !aliveT[ti]) continue;
+        for (const idx of tris[ti]) vTris[idx].push(ti);
+    }
+    return vTris;
+}
+
+/**
+ * 拓扑守卫（P0 洞）：边折叠的 link condition（Hoppe 1996）。
+ * 折叠 (u,v) 保持流形（不产生非流形边/缝合）的充要条件是：
+ *   link(u) ∩ link(v) == 边(u,v) 的对立顶点集合（与边相邻三角形的第三个顶点）。
+ * 若 u/v 除对立顶点外还有额外公共邻居，折叠会制造「非流形边」（共享三角形数 > 2）或把
+ * 边界缝合成内部（pinching）。注：此条件不防「内部边变边界」这一种洞（见 collapseCreatesHole）。
+ * @returns {boolean} true=拓扑合法可折叠
+ */
+export function linkConditionValid(tris, aliveT, vTris, u, v) {
+    const nu = new Set();
+    for (const ti of vTris[u]) if (aliveT[ti]) for (const w of tris[ti]) if (w !== u) nu.add(w);
+    const nv = new Set();
+    for (const ti of vTris[v]) if (aliveT[ti]) for (const w of tris[ti]) if (w !== v) nv.add(w);
+    const common = new Set();
+    for (const w of nu) if (w !== v && nv.has(w)) common.add(w);
+    const opp = new Set();
+    for (const ti of vTris[u]) {
+        if (!aliveT[ti]) continue;
+        const t = tris[ti];
+        if (t.includes(v)) for (const w of t) if (w !== u && w !== v) opp.add(w);
+    }
+    if (common.size !== opp.size) return false;
+    for (const w of common) if (!opp.has(w)) return false;
+    return true;
+}
+
+/**
+ * 拓扑守卫（P0 洞，直接版）：检查折叠是否制造「洞」（内部边 → 边界边）或「非流形边」（共享 >2）。
+ * 对每个受影响邻居 w 统计合并边 (u,w) 的折叠前后共享三角形数：
+ * - post > 2 → 非流形（pinching）→ 拒绝；
+ * - 边当前为内部（共享 2）且折叠后 < 2（变边界/悬空）→ 洞 → 拒绝。
+ * 注意：link condition 只防「额外公共邻居/缝合」，不防「内部边变边界」这一种洞，
+ * （例：内部边 (u,v) 一端 v 落在边界上，折叠后 (u,a) 由内部变边界），故需本检查兜底。
+ * @returns {boolean} true=有洞/非流形，应拒绝
+ */
+export function collapseCreatesHole(tris, aliveT, vTris, u, v) {
+    const neighbors = new Set();
+    for (const ti of vTris[u]) if (aliveT[ti]) for (const w of tris[ti]) if (w !== u && w !== v) neighbors.add(w);
+    for (const ti of vTris[v]) if (aliveT[ti]) for (const w of tris[ti]) if (w !== u && w !== v) neighbors.add(w);
+    for (const w of neighbors) {
+        let preU = 0, preV = 0, post = 0;
+        for (const ti of vTris[u]) {
+            if (!aliveT[ti] || !tris[ti].includes(w)) continue;
+            preU++;
+            if (!tris[ti].includes(v)) post++;
+        }
+        for (const ti of vTris[v]) {
+            if (!aliveT[ti] || !tris[ti].includes(w)) continue;
+            preV++;
+            if (!tris[ti].includes(u)) post++;
+        }
+        if (post > 2) return true;
+        if ((preU === 2 || preV === 2) && post < 2) return true;
+    }
+    return false;
+}
+
+/**
+ * 折叠翻转守卫（P2 fold-over）：模拟 u/v 折叠到 newPos，检查每个受影响存活三角形的新法线
+ * 与其相邻三角形（共享边）法线夹角是否突变（> FOLD_ANGLE_MAX_DEG 且原始夹角正常）。
+ * 手指/细长圆柱高曲率区折叠易把三角形「翻回自身」→ 视觉冒出多余面片。
+ * @returns {boolean} true=存在折叠翻转（应拒绝）
+ */
+export function collapseFoldOver(positions, tris, aliveT, vTris, u, v, newPos) {
+    const nrm = (p0, p1, p2) => {
+        const abx = p1[0] - p0[0], aby = p1[1] - p0[1], abz = p1[2] - p0[2];
+        const acx = p2[0] - p0[0], acy = p2[1] - p0[1], acz = p2[2] - p0[2];
+        return [aby * acz - abz * acy, abz * acx - abx * acz, abx * acy - aby * acx];
+    };
+    const dot = (a, b) => {
+        const la = Math.hypot(a[0], a[1], a[2]);
+        const lb = Math.hypot(b[0], b[1], b[2]);
+        if (la < 1e-12 || lb < 1e-12) return 1;
+        return (a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) / (la * lb);
+    };
+    const FOLD_DOT_MIN = Math.cos((FOLD_ANGLE_MAX_DEG * Math.PI) / 180);
+    const newN = new Map(); // ti -> 新法线（受影响存活三角形）
+    const post = new Map(); // ti -> post-collapse 索引（v→u）
+    const affected = [];
+    for (const ti of vTris[u].concat(vTris[v])) {
+        if (!aliveT[ti]) continue;
+        const t = tris[ti];
+        if (t.includes(u) && t.includes(v)) continue; // 将被移除
+        const posOf = (i) => (i === u || i === v ? newPos : positions[i]);
+        post.set(ti, t.map((i) => (i === v ? u : i)));
+        newN.set(ti, nrm(posOf(t[0]), posOf(t[1]), posOf(t[2])));
+        affected.push(ti);
+    }
+    for (const ti of affected) {
+        const n = newN.get(ti);
+        const nt = post.get(ti);
+        for (let k = 0; k < 3; k++) {
+            const a = nt[k], b = nt[(k + 1) % 3];
+            const inc = new Set();
+            if (a !== u && b !== u) {
+                for (const tj of vTris[a]) if (aliveT[tj] && tris[tj].includes(b)) inc.add(tj);
+            } else {
+                const x = a === u ? b : a;
+                for (const tj of vTris[u]) if (aliveT[tj] && tris[tj].includes(x)) inc.add(tj);
+                for (const tj of vTris[v]) if (aliveT[tj] && tris[tj].includes(x)) inc.add(tj);
+            }
+            inc.delete(ti);
+            for (const tj of inc) {
+                const t = tris[tj];
+                if (t.includes(u) && t.includes(v)) continue; // 将被移除，不是邻居
+                const nbrN = newN.has(tj)
+                    ? newN.get(tj)
+                    : nrm(positions[t[0]], positions[t[1]], positions[t[2]]);
+                const cosNew = dot(n, nbrN);
+                const on = nrm(positions[tris[ti][0]], positions[tris[ti][1]], positions[tris[ti][2]]);
+                const onbr = nrm(positions[t[0]], positions[t[1]], positions[t[2]]);
+                const cosOrig = dot(on, onbr);
+                if (cosNew < FOLD_DOT_MIN && cosOrig > FOLD_DOT_MIN) return true;
+            }
+        }
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------ *
@@ -375,7 +566,18 @@ export function collapseMesh({
     };
     buildInitialEdges();
 
-    const stats = { initialTriangles: triCount, finalTriangles: triCount, collapses: 0, rejected: 0, warnings: [] };
+    const stats = {
+        initialTriangles: triCount,
+        finalTriangles: triCount,
+        collapses: 0,
+        rejected: 0,
+        shapeRejects: 0,
+        linkRejects: 0,
+        holeRejects: 0,
+        foldOverRejects: 0,
+        materialRejects: 0,
+        warnings: [],
+    };
 
     // 折叠主循环：单步折叠（共享状态经闭包访问：heap/edgeMap/tris/vTris/quadrics/positions/aliveV/aliveT/
     // triCount/aliveMatTri/minMatTri/minRetention/protectedHit/stats 等）
@@ -406,7 +608,32 @@ export function collapseMesh({
             if (hasU && hasV) continue; // 将被移除
             if (!isValidCollapse(positions, t, u, v, pos)) { ok = false; break; }
         }
-        if (!ok) { e.dead = true; stats.rejected++; return; }
+        if (!ok) { e.dead = true; stats.rejected++; stats.shapeRejects++; return; }
+
+        // 拓扑守卫（P0 洞）：link condition（防非流形/缝合） + 洞检测（防内部边变边界）。
+        if (!linkConditionValid(tris, aliveT, vTris, u, v)) { e.dead = true; stats.rejected++; stats.linkRejects++; return; }
+        {
+            // 洞守卫豁免：若本次折叠是在清理「近退化三角形」（含共点边），不视为造洞。
+            // 原始模型存在少量叠放/共点几何（近退化 sliver），折叠清理它们会让共点边分离成边界，
+            // 属「缺陷清理」而非「洞」；若不加豁免，洞守卫会卡住清理 → 输出残留共点退化三角形。
+            let removesSlit = false;
+            for (const ti of affected) {
+                const t = tris[ti];
+                if (!(t.includes(u) && t.includes(v))) continue;
+                const p0 = positions[t[0]], p1 = positions[t[1]], p2 = positions[t[2]];
+                if (Math.hypot(p0[0]-p1[0], p0[1]-p1[1], p0[2]-p1[2]) < NEAR_DEGENERATE_EDGE ||
+                    Math.hypot(p1[0]-p2[0], p1[1]-p2[1], p1[2]-p2[2]) < NEAR_DEGENERATE_EDGE ||
+                    Math.hypot(p2[0]-p0[0], p2[1]-p0[1], p2[2]-p0[2]) < NEAR_DEGENERATE_EDGE) {
+                    removesSlit = true;
+                    break;
+                }
+            }
+            if (!removesSlit && collapseCreatesHole(tris, aliveT, vTris, u, v)) { e.dead = true; stats.rejected++; stats.holeRejects++; return; }
+        }
+
+        // 折叠翻转守卫（P2）：折叠后新三角形与其相邻三角形法线夹角突变（fold-over）→ 拒绝。
+        // 细长圆柱（手指）高曲率区折叠易「翻回自身」冒出多余面片。
+        if (collapseFoldOver(positions, tris, aliveT, vTris, u, v, pos)) { e.dead = true; stats.rejected++; stats.foldOverRejects++; return; }
 
         // 材质动态保护：本次折叠会移除「同时含 u 与 v 的存活三角形」；
         // 若任一材质移除后剩余数跌破最低保留数 → 拒绝折叠（该材质剩余三角形不可再移除）
@@ -425,7 +652,7 @@ export function collapseMesh({
                     protectedHit[mi] = 1;
                 }
             }
-            if (blocked) { e.dead = true; stats.rejected++; return; }
+            if (blocked) { e.dead = true; stats.rejected++; stats.materialRejects++; return; }
         }
 
         // 折叠：v 并入 u，u 位置更新，v 标记死亡
