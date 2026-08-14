@@ -24,9 +24,23 @@ const QUALITY_CHECKS = [
     'noNonManifoldEdges',
     'noNewHoles',
 ];
-// 指尖突起形态检查的区域与突起阈值（口径与 scripts/diag-fingertip.mjs 一致）
-const FINGERTIP_REGION = (c) => Math.abs(c[0]) > 8.0 && c[1] > 13.8 && c[1] < 15.0;
-const FINGERTIP_PROTRUDE = 0.08;
+// 指尖突起形态检查（fix7.1 重构）：全指尖区域「新增尖刺」检测，口径 = scripts/diag-finger-full.mjs。
+// fix7 的「外带 |x|>9 + 0.055 阈值」漏检内带尖刺（fix7.1 实测：修复后残留 13 个新增突起
+// = 外带 9 + 内带 4，内带 tri#15603 @[8.89,14.37,-0.73] 等 x≈±8.67~8.89、y≈14.2~14.5、z≈-0.8~-0.7
+// 在指尖内侧/掌侧，|x|≤9 不在外带断言区域 → 几何绿但视觉红）。
+// 区域扩展为全指尖 |x|>7, 13<y<16（抓 x≈8.67~8.89 内带尖刺）；口径改为「新增尖刺计数」：
+//   输出区域内 protrude > 0.05 且 距输入所有 protrude > 0.045 三角形质心距离 > 0.25 → 新增。
+// 用「距输入质心距离」而非 count 的原因：输入全指尖区域本身有 454 个 protrude>0.045 的突起
+// （内带 452 个，含合法穹面 max 0.130 @±8,15；外带仅 2 个 max 0.047）——若按 count 断言，
+// 输入的合法穹面突起会淹没新增尖刺；按距离则输入自身必匹配（距自己质心 0）→ 输入新增数恒 0。
+// 断言：输出新增数 ≤ 输入同口径新增数（输入 0）→ 即输出不得出现远离输入突起的全新尖刺。
+// fix7.1 校准：守卫 protrudeMax 压到 0.045（PROTRUDE_MAX=0.045 / PROTRUDE_RATIO=0.32，见 qem.mjs）
+// 后残留 0.050~0.052 尖刺被拒 → 新增尖刺 0。0.05 查询阈值低于守卫地板残影（原 0.052~0.053）也没关系：
+// 地板残影若与输入突起质心距离 ≤0.25 → 不判新增，故断言对守卫地板免疫（fix7 用 0.055 就是被地板逼的）。
+const FINGERTIP_REGION = (c) => Math.abs(c[0]) > 7.0 && c[1] > 13.0 && c[1] < 16.0;
+const FINGERTIP_QUERY_PROTRUDE = 0.05;
+const FINGERTIP_REF_PROTRUDE = 0.045;
+const FINGERTIP_NEW_DIST = 0.25;
 // 新增超尺寸三角形判据：输出 maxL > 输入全局 maxL p99，且质心与「输入固有巨型三角形（maxL > 输入 p99）」
 // 质心距离 ≥ 该容差 → 视为新增（R6：精确顶点匹配容差太紧会把移动过的输入三角形误计为新增，用质心 0.05）
 const OVERSIZE_MATCH_TOL = 0.05;
@@ -77,21 +91,36 @@ function triCentroid(positions, t) {
     return [(p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, (p0[2] + p1[2] + p2[2]) / 3];
 }
 
-// 指尖区域突起 > FINGERTIP_PROTRUDE 的三角形数量 + 最大面积（口径 = qem.maxProtrudeOfVerts 单一来源）
-function fingertipStats(positions, tris) {
-    const edgeMap = buildEdgeTris(tris);
-    let count = 0, maxArea = 0;
-    for (let ti = 0; ti < tris.length; ti++) {
-        const c = triCentroid(positions, tris[ti]);
+// 全指尖区域「新增尖刺」检测（口径 = scripts/diag-finger-full.mjs，qem.maxProtrudeOfVerts 单一来源）：
+// query 区域 protrude > FINGERTIP_QUERY_PROTRUDE 且 距 ref 所有 protrude > FINGERTIP_REF_PROTRUDE
+// 三角形质心距离 > FINGERTIP_NEW_DIST → 新增。返回 { count, maxArea, refCount }。
+export function countNewFingertipProtrusions(queryPos, queryTri, refPos, refTri) {
+    const qEdge = buildEdgeTris(queryTri);
+    const rEdge = buildEdgeTris(refTri);
+    const refs = [];
+    for (let ti = 0; ti < refTri.length; ti++) {
+        const c = triCentroid(refPos, refTri[ti]);
         if (!FINGERTIP_REGION(c)) continue;
-        const protrude = maxProtrudeOfVerts(positions, tris, ti, edgeMap);
-        if (protrude > FINGERTIP_PROTRUDE) {
+        if (maxProtrudeOfVerts(refPos, refTri, ti, rEdge) <= FINGERTIP_REF_PROTRUDE) continue;
+        refs.push(c);
+    }
+    let count = 0, maxArea = 0;
+    for (let ti = 0; ti < queryTri.length; ti++) {
+        const c = triCentroid(queryPos, queryTri[ti]);
+        if (!FINGERTIP_REGION(c)) continue;
+        if (maxProtrudeOfVerts(queryPos, queryTri, ti, qEdge) <= FINGERTIP_QUERY_PROTRUDE) continue;
+        let md = Infinity;
+        for (const r of refs) {
+            const d = Math.hypot(r[0] - c[0], r[1] - c[1], r[2] - c[2]);
+            if (d < md) md = d;
+        }
+        if (md > FINGERTIP_NEW_DIST) {
             count++;
-            const ar = triGeomVerts(positions, tris[ti]).area;
+            const ar = triGeomVerts(queryPos, queryTri[ti]).area;
             if (ar > maxArea) maxArea = ar;
         }
     }
-    return { count, maxArea };
+    return { count, maxArea, refCount: refs.length };
 }
 
 // 新增超尺寸三角形数：输出 maxL > inMaxLP99 且质心无法在「输入固有巨型三角形」容差内匹配。
@@ -527,11 +556,13 @@ export function verifyFaces({
             checks.burumaAreaP99Growth = outAreaP99 <= inAreaP99 * 1.5;
             checks.burumaMaxLP90Growth = outMaxLP90 <= inMaxLP90 * 1.5;
 
-            // 指尖突起形态：区域 |x|>8.0, 13.8<y<15.0 内突起 >0.08 的三角形数量 + 最大面积
-            const inTip = fingertipStats(origPos, origTri);
-            const outTip = fingertipStats(decPos, decTri);
-            quality.fingertip = { inCount: inTip.count, outCount: outTip.count, inMaxArea: inTip.maxArea, outMaxArea: outTip.maxArea, protrudeThreshold: FINGERTIP_PROTRUDE };
-            checks.fingertipProtrudeShape = outTip.count <= inTip.count && outTip.maxArea <= inTip.maxArea;
+            // 指尖突起形态（fix7.1）：全指尖区域 |x|>7, 13<y<16「新增尖刺」计数。输入自比必为 0
+            // （查询集 ⊆ 参考集，距自己质心 0），故断言 = 输出新增尖刺 0；fix7 外带断言漏检的内带
+            // 尖刺（x≈±8.67~8.89）在此区域必被抓。口径/阈值见 FINGERTIP_* 常量注释（diag-finger-full）。
+            const inTipNew = countNewFingertipProtrusions(origPos, origTri, origPos, origTri);
+            const outTipNew = countNewFingertipProtrusions(decPos, decTri, origPos, origTri);
+            quality.fingertip = { inCount: inTipNew.count, outCount: outTipNew.count, inMaxArea: inTipNew.maxArea, outMaxArea: outTipNew.maxArea, refCount: inTipNew.refCount, queryThreshold: FINGERTIP_QUERY_PROTRUDE, refThreshold: FINGERTIP_REF_PROTRUDE, newDist: FINGERTIP_NEW_DIST, region: 'full |x|>7, 13<y<16' };
+            checks.fingertipProtrudeShape = outTipNew.count <= inTipNew.count && outTipNew.maxArea <= inTipNew.maxArea;
 
             // 全局新增超尺寸三角形：输出 maxL > 输入全局 maxL p99，质心无法匹配输入固有巨型三角形 → 新增。
             // 只计「跨曲面合并」（新三角形所在输出表面曲率 > OVERSIZE_CURVED_DEG）——平坦区新大三角形视觉

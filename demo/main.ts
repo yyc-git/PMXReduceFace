@@ -117,6 +117,37 @@ function frameModel(m: THREE.SkinnedMesh): void {
   camera.far = dist * 100;
   camera.updateProjectionMatrix();
   controls.update();
+  // 诊断模式：?shot=xxx 时相机直接对准小手指（小手指指尖约 ±9.3, y≈14.3）
+  const shot = new URLSearchParams(window.location.search).get('shot');
+  if (shot) {
+    const shots: Record<string, { pos: [number, number, number]; tgt: [number, number, number] }> = {
+      // 右手：指尖外侧平视（正对指尖末端）
+      r1: { pos: [12.6, 14.3, 0.35], tgt: [9.3, 14.3, 0.35] },
+      // 右手：指尖侧面（z+ 方向看）
+      r2: { pos: [9.3, 14.3, 4.5], tgt: [9.3, 14.3, 0.35] },
+      // 右手：侧上方俯瞰
+      r3: { pos: [11.2, 17.2, 2.2], tgt: [9.3, 14.3, 0.35] },
+      // 右手：指尖末端正视（x 正方向看）
+      r4: { pos: [13.8, 14.8, 0.35], tgt: [9.3, 14.3, 0.35] },
+      // 左手：指尖外侧平视
+      l1: { pos: [-12.6, 14.3, 0.35], tgt: [-9.3, 14.3, 0.35] },
+      // 左手：指尖侧面（z+ 方向看）
+      l2: { pos: [-9.3, 14.3, 4.5], tgt: [-9.3, 14.3, 0.35] },
+      // 左手：侧上方俯瞰
+      l3: { pos: [-11.2, 17.2, 2.2], tgt: [-9.3, 14.3, 0.35] },
+      // 左手：指尖末端正视
+      l4: { pos: [-13.8, 14.8, 0.35], tgt: [-9.3, 14.3, 0.35] },
+    };
+    const s = shots[shot];
+    if (s) {
+      controls.target.set(...s.tgt);
+      camera.position.set(...s.pos);
+      camera.near = 0.01;
+      camera.far = 500;
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+  }
 }
 
 // 实时统计（mesh 几何为准，stats.json 缺失时也能显示）
@@ -211,7 +242,12 @@ function boot(): void {
     .catch(() => {
       stats = null;
     })
-    .finally(() => loadLod('LOD_100'));
+    .finally(() => {
+      // 诊断模式：?lod=LOD_70 等可指定初始 LOD
+      const lodParam = new URLSearchParams(window.location.search).get('lod');
+      const initial = lodParam && LODS.some((l) => l.name === lodParam) ? lodParam : 'LOD_100';
+      loadLod(initial);
+    });
 }
 boot();
 

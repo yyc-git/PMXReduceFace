@@ -253,6 +253,30 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     Then 面积超局部预算时返回 true（大鼓包被拒绝）
     And 传 sizeA=null（旧调用兼容）返回 false（证明是新增条件在起作用）
 
+  # ★ 突起守卫尖刺回归（fix7 Scenario G，P3 单元级）：0.06 级指尖尖刺折叠必须被拒
+  # 小手指指尖尖刺（demo 实测 tri#15189 等 protrude 0.060~0.066，输入该处局部突起预算低 ≤0.04）
+  # 被 fix6 的 PROTRUDE_MAX=0.066 放行（allowance=0.066 > 0.060）。平面 3×3 网格（近共面微三角团）
+  # 折叠 (4,5)→[0.5,1,0.030]（突起 P≈0.060）+ 预算 0.04 → allowance=max(PROTRUDE_MAX,0.04)。
+  # RED 能力：把 qem.mjs 的 PROTRUDE_MAX 改回 0.066（或更高）→ allowance=0.066>0.060 → 放行 → 本断言红
+  Scenario: 突起守卫拒绝指尖尖刺折叠且不误杀正常折叠
+    Given 构造平面 3×3 网格 + 折叠 (4,5) 到 [0.5,1,0.030] 的候选（突起 P≈0.060，介于预算 0.04 与阈值之间）
+    When 直接调用 qem.mjs 的 collapseProtrudes（预算数组 0.04）
+    Then 尖刺候选被拒绝（返回 true，0.06 级突起超 allowance）
+    And 小突起折叠（d=0.02，P≈0.04 ≤ allowance）仍放行（不误杀）
+
+  # ★ 全指尖区域新增尖刺检测（fix7.1 Scenario H，单元级）：verify.countNewFingertipProtrusions
+  # fix7 外带断言漏检内带尖刺（demo 实测 13 个残留新增：外带 9 + 内带 4，内带 x≈±8.67~8.89 y≈14.2~14.5
+  # z≈-0.8~-0.7 在指尖内侧/掌侧）。新口径 = 全指尖区域 |x|>7, 13<y<16 内「输出 protrude>0.05 且距输入
+  # protrude>0.045 突起质心 >0.25 的三角形数」；输入自比恒 0（查询集 ⊆ 参考集，距自己质心 0）。
+  # 本场景构造两块指尖区域 3×3 网格簇（簇 A 在 x∈[7.5,8.5]、簇 B 在 x∈[9.5,10.5]，各中心戳 0.06）：
+  # 输入=簇 A，输出=簇 A+簇 B → 簇 B 全三角形远离输入突起 → 必判为新增（RED 能力：删除该导出→恒 0→红）。
+  Scenario: 全指尖区域新增尖刺检测能抓到远离输入突起的输出三角形
+    Given 构造指尖区域（|x|>7, 13<y<16）两块 3×3 网格簇（各中心戳出 0.06，protrude>0.05），输入=簇 A、输出=簇 A+簇 B
+    When 直接调用 verify.mjs 的 countNewFingertipProtrusions
+    Then 输入自比新增 0（inSelf=0，查询集 ⊆ 参考集）
+    And 输出与输入相同时新增 0（outSame=0，无误报）
+    And 输出含远离输入突起的簇 B 时新增 ≥1（outNew≥1，内带尖刺形态必被抓）
+
   # ★ 曲率感知尺寸守卫（第六轮 Scenario F，P0 集成级）：球面 fixture 减面输出无跨曲面超尺寸三角形
   # R=1 经纬球 seg=8/rings=8 → 128 输入三角形，每顶点曲率最低 20.8° > CURV_MIN_DEG(20°) → 门控全表面生效；
   # 输入无 sliver/无洞。target-ratio 0.5 下守卫开启 → 输出每个三角形 maxL/面积 ≤ max(floor, 系数 × 每顶点预算上限)

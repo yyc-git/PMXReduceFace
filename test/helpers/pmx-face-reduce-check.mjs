@@ -53,6 +53,11 @@ let MAXL_FLOOR_RATIO = 1.0;
 let AREA_FLOOR_RATIO = 0.5;
 let qemComputeSizeStats = null;
 let qemCollapseOversize = null;
+let verifyCountNewFingertipProtrusions = null;
+try {
+  const verifyMod = await import('../../src/tool/pmx-face-reduce/verify.mjs');
+  if (typeof verifyMod.countNewFingertipProtrusions === 'function') verifyCountNewFingertipProtrusions = verifyMod.countNewFingertipProtrusions;
+} catch (e) { /* 修复前 verify.mjs（无该导出）→ 本地兜底恒 0（见下） */ }
 try {
   const qem = await import('../../src/tool/pmx-face-reduce/qem.mjs');
   if (typeof qem.SLIVER_ASPECT_MAX === 'number') SLIVER_ASPECT_MAX = qem.SLIVER_ASPECT_MAX;
@@ -998,6 +1003,75 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
     legacyCompatible: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, bigNew, PROTRUDE_MAX, budgets, Infinity, null) === false,
     areaBudget: AREA_COEF * 0.01,
   };
+}
+
+// ---------- 突起守卫尖刺单元测试（fix7，P3 单元级） ----------
+// 平面 3×3 网格（近共面微三角团），折叠 (4,5) 到 [0.5,1,d]：突起 P 随 d 平滑（d=0.030 → P≈0.060）。
+// 指尖尖刺（实测 tri#15189 等 protrude 0.060~0.066）的特征：小三角从近共面微三角团戳出，该处
+// 输入局部突起预算低（实测尖刺区输入预算 p99≈0.038，max≈0.070）。预算 0.04 模拟低曲率局部许可：
+//   allowance = max(PROTRUDE_MAX, min(budget, cap)) = max(PROTRUDE_MAX, 0.04)。
+// 尖刺（P≈0.060）在 PROTRUDE_MAX ≤ 0.05 时被拒（allowance=0.05 < 0.060）；
+// 若 PROTRUDE_MAX 回退到 0.066（fix6 定稿值），allowance=0.066 > 0.060 → 放行 → 本断言 RED。
+// 小突起折叠（d=0.020 → P≈0.040 ≤ allowance）→ 放行（不误杀正常高曲率折叠）。
+// RED 能力：把 qem.mjs 的 PROTRUDE_MAX 改回 0.066（或更高）→ spikeRejected 变 false → 红。
+{
+  const N = 3;
+  const positions = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) positions.push([c, r, 0]);
+  const idx = (c, r) => r * N + c;
+  const tris = [];
+  for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+    const a = idx(c, r), b = idx(c + 1, r), d = idx(c, r + 1), e = idx(c + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
+  }
+  const aliveT = new Uint8Array(tris.length).fill(1);
+  const vTris = buildVertexTris(positions.length, tris, aliveT);
+  const spikeNew = [0.5, 1, 0.030];
+  const smallNew = [0.5, 1, 0.020];
+  const budget = 0.04;
+  const budgets = new Float64Array(positions.length).fill(budget);
+  facts.unitSpikeGuard = {
+    measured: collapseProtrudeMax(positions, tris, aliveT, vTris, 4, 5, spikeNew),
+    spikeRejected: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, spikeNew, PROTRUDE_MAX, budgets, Infinity) === true,
+    smallAllowed: collapseProtrudes(positions, tris, aliveT, vTris, 4, 5, smallNew, PROTRUDE_MAX, budgets, Infinity) === false,
+    allowance: Math.max(PROTRUDE_MAX, budget),
+    protrudeMax: PROTRUDE_MAX,
+  };
+}
+
+// ---------- 全指尖区域新增尖刺检测单元测试（fix7.1，verify.countNewFingertipProtrusions） ----------
+// 构造两块指尖区域（|x|>7, 13<y<16）3×3 网格簇：簇 A（x∈[7.5,8.5]）+ 簇 B（x∈[9.5,10.5]），
+// 每簇中心顶点向上戳 0.06 → 8 个三角形 protrude≈0.06 > 查询阈值 0.05（且 > 参考阈值 0.045）。
+// 输入 = 簇 A；输出 = 簇 A + 簇 B。簇 B 质心距簇 A 所有突起质心 > 0.25 → 应判为新增。
+// 断言：输入自比新增 0（查询集 ⊆ 参考集）；输出 = 输入时新增 0（无误报）；输出含远离的簇 B → 新增 ≥1。
+// 内带尖刺（demo tri#15603 @[8.89,14.37,-0.73] 等）正是「远离输入突起的全新三角形」形态 → 本口径必抓。
+// RED 能力：把 verify.mjs 的 countNewFingertipProtrusions 删除 → 本地兜底恒 0 → outNew=0 → 断言红。
+{
+  const N = 3;
+  const grid = (x0) => {
+    const pos = [];
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) pos.push([x0 + c * 0.5, 14 + r * 0.5, 0]);
+    return pos;
+  };
+  const idx = (c, r) => r * N + c;
+  const quadTris = [];
+  for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+    const a = idx(c, r), b = idx(c + 1, r), d = idx(c, r + 1), e = idx(c + 1, r + 1);
+    quadTris.push([a, b, e], [a, e, d]);
+  }
+  const posA = grid(7.5); posA[4][2] = 0.06;
+  const posB = grid(9.5); posB[4][2] = 0.06;
+  const nA = posA.length;
+  const posOut = [...posA, ...posB];
+  const trisOut = [...quadTris, ...quadTris.map((t) => [t[0] + nA, t[1] + nA, t[2] + nA])];
+  const detector = verifyCountNewFingertipProtrusions
+    ? {
+        inSelf: verifyCountNewFingertipProtrusions(posA, quadTris, posA, quadTris).count,
+        outSame: verifyCountNewFingertipProtrusions(posA, quadTris, posA, quadTris).count,
+        outNew: verifyCountNewFingertipProtrusions(posOut, trisOut, posA, quadTris).count,
+      }
+    : { inSelf: 0, outSame: 0, outNew: 0 };
+  facts.unitTipNewProtrude = detector;
 }
 
 // ---------- 双面微片锁定单元测试（P3 flip lock） ----------

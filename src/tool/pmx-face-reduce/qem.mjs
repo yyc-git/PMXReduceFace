@@ -38,18 +38,23 @@ export const FOLD_ANGLE_MAX_DEG = 120;
 // 突起（protrude）守卫阈值：折叠后受影响三角形顶点到邻接三角形平面的距离超过该值 → 拒绝。
 // 根因：指尖/指甲区的近共面微三角团（面积 ~1e-4）被 QEM「免费」合并成跨曲面大平面 → 顶点从邻面戳出
 // （diag-fingertip 实测突起面 8→98、最大突起 0.098→0.184）。
-// PROTRUDE_MAX = 突起守卫阈值参考值（0.066，实测校准）；collapseMesh 实际使用尺度归一化阈值
-// = PROTRUDE_RATIO × 原始边长中位数（本模型 medE≈0.13 → 0.066）。与每顶点原始突起预算（局部许可）配合：
+// PROTRUDE_MAX = 突起守卫阈值参考值（0.045，fix7.1 校准）；collapseMesh 实际使用尺度归一化阈值
+// = PROTRUDE_RATIO × 原始边长中位数（本模型 medE≈0.133 → 0.0425）。与每顶点原始突起预算（局部许可）配合：
 // 实际许可 = max(尺度归一化阈值, 受影响三角形顶点的原始突起预算)。
-// 选择依据：指尖近共面微三角团原始突起 ≤0.03 << 0.066，故能拦下「免费合并成跨曲面大平面」
-// （突起 0.08~0.184）；对高曲率区（手/耳/袜口）由局部预算放大许可，不误杀正常简化。
-// 尺度归一化必要：合成 fixture（网格 cell≈1.0）若用绝对 0.066 会误杀（实测 1951 目标只到 2761）。
-// 校准数据（本模型）：0.08 档指尖突起面 4 但 LOD50 达不到目标（27770 > 27114）；0.066 档 LOD50 达标
-// （27114 ≤ 27114）且指尖突起面 6 ≤ 输入基线 8、翻转面仍 34。BDD 计数/单元测试从本常量 import 单一来源。
-export const PROTRUDE_MAX = 0.066;
-export const PROTRUDE_RATIO = 0.4;
+// fix7.1 校准（小手指指尖尖刺实测，scripts/diag-finger-full.mjs）：fix7（MAX=0.05/RATIO=0.4）
+// 压到 protrudeMax=0.053 只拦下 0.060~0.066 级尖刺，残留 13 个新增突起（外带 9 + 内带 4）仍为
+// 0.050~0.052（tri#19959 @[9.47,14.23,0.15] p=0.052、tri#15603 @[8.89,14.37,-0.73] p=0.052 等），
+// 全部 ≤0.053 → 放行 → verify「全指尖区域新增尖刺」断言红（内带 x≈±8.67~8.89 是 fix7 外带断言的漏检区）。
+// fix7.1 双降：PROTRUDE_MAX 0.05→0.045、PROTRUDE_RATIO 0.4→0.32 → 本模型 protrudeMax =
+// max(0.045, 0.32×0.133=0.0425) = 0.045 → 残留 0.050~0.052 尖刺全被拒（新增尖刺 → 0）。
+// 代价：减面地板 40608 → ≈41300（+700 面左右，质量优先允许 reductionMet=false，BurumaSet 等 6 项质量断言全绿）。
+// 局部预算（高曲率区原始突起）不受影响：尖刺区输入预算 ≤0.04（p99=0.038），降阈值只约束低预算区，
+// 高曲率区（手/耳/袜口，预算 0.08~0.17）仍由预算放大许可，不误杀正常简化。
+// 尺度归一化必要：合成 fixture（网格 cell≈1.0）protrudeMax = max(0.045, 0.32) = 0.32 → 不受影响。
+export const PROTRUDE_MAX = 0.045;
+export const PROTRUDE_RATIO = 0.32;
 // 预算 cap（第五轮）：每顶点原始突起预算的上限 = PROTRUDE_RATIO × 原始边长中位数 × 1.5
-// （本模型 medE≈0.13 → ≈0.078）。指尖输入几何的原始突起预算 ≈0.098（双面微片/指甲缝微特征）
+// （fix7.1 RATIO=0.32 → 本模型 medE≈0.13 → ≈0.064）。指尖输入几何的原始突起预算 ≈0.098（双面微片/指甲缝微特征）
 // 被「当局部曲率许可」传播后放行 0.088 的新跨曲面大平面；cap 把预算限制在曲面尺度内，
 // 杜绝「微特征突起被误当成曲率许可」。coarser 网格（合成 fixture cell≈1.0）自动放大，不误杀。
 export function protrudeCap(medE) {
@@ -1072,8 +1077,10 @@ export function collapseMesh({
     for (const vi of collectFlipMicroFaceVertices(vertices, tris)) locked.add(vi);
 
     // 突起守卫阈值：绝对 PROTRUDE_MAX 与尺度归一化 PROTRUDE_RATIO × medE 取大。
-    // 细网格（本模型 medE≈0.13）→ 0.066 绝对阈值生效（校准保证指尖突起面 ≤ 输入、翻转面 34、LOD50 达标）；
-    // coarser 网格（合成 fixture cell≈1.0）→ 阈值随尺度放大，避免误杀正常简化。
+    // fix7.1：PROTRUDE_MAX=0.045 / PROTRUDE_RATIO=0.32 后，本模型（medE≈0.133）
+    // protrudeMax = max(0.045, 0.0425) = 0.045，拦下 fix7 残留的 0.050~0.052 级指尖尖刺
+    // （verify 全指尖区域新增尖刺断言由红转绿）；coarser 网格（合成 fixture cell≈1.0）→
+    // 阈值随尺度放大到 0.32，避免误杀正常简化。
     const medE = medianEdgeLength(positions, tris);
     const protrudeMax = Math.max(PROTRUDE_MAX, PROTRUDE_RATIO * medE);
     // 预算 cap（第五轮，默认不启用）：protrudeCap(medE)（本模型 ≈0.078）本意是封住

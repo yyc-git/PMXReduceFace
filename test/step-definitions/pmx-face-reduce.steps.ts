@@ -239,6 +239,18 @@ interface Facts {
     legacyCompatible: boolean;
     areaBudget: number;
   };
+  unitSpikeGuard: {
+    measured: number;
+    spikeRejected: boolean;
+    smallAllowed: boolean;
+    allowance: number;
+    protrudeMax: number;
+  };
+  unitTipNewProtrude: {
+    inSelf: number;
+    outSame: number;
+    outNew: number;
+  };
   sphereExit: number;
   sphereStats: ReduceStats | null;
   sphereParseable: boolean;
@@ -833,6 +845,42 @@ defineFeature(feature, (test) => {
         and(/^传 sizeA=null（旧调用兼容）返回 false（证明是新增条件在起作用）$/, () => {
             expect(facts.unitProtrudeBump.legacyCompatible).toBe(true);
             expect(facts.unitProtrudeBump.areaBudget).toBeGreaterThan(0);
+        });
+    });
+
+    test('突起守卫拒绝指尖尖刺折叠且不误杀正常折叠', ({ given, when, then, and }) => {
+        given(/^构造平面 3×3 网格 \+ 折叠 \(4,5\) 到 \[0\.5,1,0\.030\] 的候选（突起 P≈0\.060，介于预算 0\.04 与阈值之间）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseProtrudes（预算数组 0\.04）$/, () => {
+            facts = runHelper();
+        });
+        then(/^尖刺候选被拒绝（返回 true，0\.06 级突起超 allowance）$/, () => {
+            expect(facts.unitSpikeGuard.spikeRejected).toBe(true);
+            expect(facts.unitSpikeGuard.measured).toBeGreaterThan(0.055);
+            expect(facts.unitSpikeGuard.measured).toBeLessThan(0.066);
+            expect(facts.unitSpikeGuard.allowance).toBeLessThan(facts.unitSpikeGuard.measured);
+        });
+        and(/^小突起折叠（d=0\.02，P≈0\.04 ≤ allowance）仍放行（不误杀）$/, () => {
+            expect(facts.unitSpikeGuard.smallAllowed).toBe(true);
+        });
+    });
+
+    test('全指尖区域新增尖刺检测能抓到远离输入突起的输出三角形', ({ given, when, then, and }) => {
+        given(/^构造指尖区域（\|x\|>7, 13<y<16）两块 3×3 网格簇（各中心戳出 0\.06，protrude>0\.05），输入=簇 A、输出=簇 A\+簇 B$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 verify\.mjs 的 countNewFingertipProtrusions$/, () => {
+            facts = runHelper();
+        });
+        then(/^输入自比新增 0（inSelf=0，查询集 ⊆ 参考集）$/, () => {
+            expect(facts.unitTipNewProtrude.inSelf).toBe(0);
+        });
+        and(/^输出与输入相同时新增 0（outSame=0，无误报）$/, () => {
+            expect(facts.unitTipNewProtrude.outSame).toBe(0);
+        });
+        and(/^输出含远离输入突起的簇 B 时新增 ≥1（outNew≥1，内带尖刺形态必被抓）$/, () => {
+            expect(facts.unitTipNewProtrude.outNew).toBeGreaterThanOrEqual(1);
         });
     });
 
