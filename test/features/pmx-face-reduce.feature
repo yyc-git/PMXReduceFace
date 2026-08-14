@@ -318,3 +318,21 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     And verify 输出 noNonManifoldEdges 为 true（非流形边全局断言仍跑）
     And verify 输出 noNewHoles 为 true（新增洞全局断言仍跑）
 
+  # ★ 折叠后新增小洞被补面（fix10，单元级）：findHoleChains 检出「输入原表面覆盖的深湾」（真洞）
+  #     + patchHoles 三角化补面 + 合法回缩不误报
+  # 兄弟截图实证的洞（Tda 两腿之间/大腿内侧）几何本质 = 输出边界在输入被三角形覆盖的表面上切出
+  # 深湾（新增边界边链，输入原表面覆盖）。合成 8×5 平面网格（cell=1），挖掉顶部中心三角形区
+  # A=(3,5)→X=(4,2)→B=(5,5)（bay 面积 5 > 2×medE²=2，环长 7 ≤ 8）→ 输出边界在输入直边界上切出
+  # V 形深湾。断言：findHoleChains 检出洞数 ≥1（真洞被检出）；patchHoles 补面三角形数 ≥1（补面生效）；
+  # 补面后 findHoleChains 洞数为 0（洞被填平）；合法回缩（顶部整行浅窄条带移除，浅而宽）洞数为 0
+  # （fix5 教训「开放边界正常回缩不算洞」不误报）。
+  # RED 能力：把 qem.mjs 的 findHoleChains/patchHoles 删除 → 本地兜底检出 0 洞 / 补 0 → 本场景立即失败。
+  Scenario: 折叠后新增小洞被补面且合法回缩不误报
+    Given 构造带新增深湾洞的局部网格（8×5 网格挖掉顶部中心 A-X-B 区，输入原表面覆盖）
+    And 构造合法回缩网格（顶部整行浅窄条带移除）
+    When 直接调用 qem.mjs 的 findHoleChains 与 patchHoles
+    Then findHoleChains 检出洞数 ≥1（输入覆盖深湾 = 真洞）
+    And patchHoles 补面三角形数 ≥1（补面生效，三角化补面）
+    And 补面后 findHoleChains 洞数为 0（洞被填平）
+    And 合法回缩网格 findHoleChains 洞数为 0（浅宽回缩不误报，fix5 教训）
+

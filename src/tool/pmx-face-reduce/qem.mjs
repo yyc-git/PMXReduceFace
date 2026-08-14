@@ -191,6 +191,380 @@ export function countSpatiallyNewBoundaryEdges(inPositions, inTris, inAlive, out
     }
     return newCount;
 }
+
+/* ------------------------------------------------------------------ *
+ * 洞检测与三角化补面（fix10）
+ * ------------------------------------------------------------------ */
+
+// 补面参数（verify.mjs 断言与 qem.mjs 补面共用；断言用更严格阈值防合法回缩误报）。
+// fix10 术语对齐（兄弟澄清）：空洞/洞 = 三角形网格缺失能看到背景（Tda 两腿之间/大腿内侧根部、
+// 右腋下等），不是大三角（fix9）、不是法线异常（fix8）、不是翻面。空洞的几何本质：
+// 输出边界在输入被三角形覆盖的表面上「抄近路/切出深湾」，形成输入表面缺失区（bay）。
+// fix5 教训「开放边界正常回缩不算洞」（XiaoMei/Tda 裙摆回缩边界边）：回缩的湾浅而宽
+// （sagitta/mouth 小）、位于输入本来就开口的外侧 → 用深湾 + 输入覆盖过滤区分。
+export const HOLE_CHAIN_MAX_EDGES = 8;          // 补面洞环最大边数（环长 ≤ 该值才补面）
+export const HOLE_MIN_AREA_RATIO = 2.0;         // 补面洞最小面积 = ratio × medE²（洞面积低于此不补）
+export const HOLE_ASSERT_MIN_AREA_RATIO = 8.0;  // verify 断言阈值（更高，防合法回缩/微小位移误报）
+export const HOLE_DEPTH_RATIO = 0.5;            // sagitta/mouth ≥ 该值 = 深湾（真洞）；浅宽回缩不算
+export const HOLE_MAX_MOUTH_RATIO = 15.0;       // 洞 mouth ≤ ratio × medE（排除整裙边级长回缩带）
+export const HOLE_SOLID_DIST = 0.6;             // 洞质心距最近「输入三角形质心」< 该值 = 输入原表面覆盖
+
+/** 边界边集合（共享数 == 1 的边）。返回 { edges:[[a,b]...], edgeSet:Set<"a:b">, adj:Map<v,[nb]> }。 */
+function buildBoundaryEdges(tris, aliveT) {
+    const cnt = new Map();
+    const edges = [];
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (aliveT && !aliveT[ti]) continue;
+        const t = tris[ti];
+        for (let k = 0; k < 3; k++) {
+            const x = t[k], y = t[(k + 1) % 3];
+            const key = x < y ? `${x}:${y}` : `${y}:${x}`;
+            cnt.set(key, (cnt.get(key) || 0) + 1);
+        }
+    }
+    const edgeSet = new Set();
+    for (const [k, c] of cnt) if (c === 1) edgeSet.add(k);
+    const adj = new Map();
+    for (const k of edgeSet) {
+        const [a, b] = k.split(':').map(Number);
+        edges.push([a, b]);
+        if (!adj.has(a)) adj.set(a, []);
+        if (!adj.has(b)) adj.set(b, []);
+        adj.get(a).push(b);
+        adj.get(b).push(a);
+    }
+    return { edges, edgeSet, adj };
+}
+
+/**
+ * 输出边界边中「输入不存在」的边（空间上新增，同 countSpatiallyNewBoundaryEdges 口径）。
+ * @returns {number[][]} 新增边界边 [[a,b],...]（a<b）
+ */
+export function collectNewBoundaryEdges(inPos, inTris, inAlive, outPos, outTris, outAlive, tol = HOLE_TOL) {
+    const { grid, cell } = buildBoundaryEdgeGrid(inPos, inTris, inAlive, 0.5);
+    const { edges } = buildBoundaryEdges(outTris, outAlive);
+    const tol2 = tol * tol;
+    const out = [];
+    for (const [a, b] of edges) {
+        const pa = posOf(outPos, a), pb = posOf(outPos, b);
+        const c = [(pa[0] + pb[0]) / 2, (pa[1] + pb[1]) / 2, (pa[2] + pb[2]) / 2];
+        const gx = Math.floor(c[0] / cell), gy = Math.floor(c[1] / cell), gz = Math.floor(c[2] / cell);
+        let ok = false;
+        outer: for (let dx = -1; dx <= 1 && !ok; dx++) for (let dy = -1; dy <= 1 && !ok; dy++) for (let dz = -1; dz <= 1 && !ok; dz++) {
+            const segs = grid.get(`${gx + dx},${gy + dy},${gz + dz}`);
+            if (!segs) continue;
+            for (const [sa, sb] of segs) if (pointSegDist2(c, sa, sb) < tol2) { ok = true; break outer; }
+        }
+        if (!ok) out.push([a, b]);
+    }
+    return out;
+}
+
+/**
+ * 把新增边界边组成最大链（路径）。返回有序顶点链数组 [[v0,v1,...],...]（每条链 ≥2 顶点）。
+ */
+export function chainNewBoundaryEdges(newEdges) {
+    const adj = new Map();
+    const add = (a, b) => {
+        if (!adj.has(a)) adj.set(a, []);
+        if (!adj.has(b)) adj.set(b, []);
+        adj.get(a).push(b);
+        adj.get(b).push(a);
+    };
+    for (const [a, b] of newEdges) add(a, b);
+    const key = (a, b) => (a < b ? `${a}:${b}` : `${b}:${a}`);
+    const deg = (v) => (adj.get(v) || []).length;
+    const allV = new Set();
+    for (const [a, b] of newEdges) { allV.add(a); allV.add(b); }
+    const usedE = new Set();
+    const chains = [];
+    const walk = (start) => {
+        const chain = [start];
+        let prev = -1, cur = start;
+        for (;;) {
+            const nbs = (adj.get(cur) || []).filter((n) => n !== prev && !usedE.has(key(cur, n)));
+            if (!nbs.length) break;
+            const next = nbs[0];
+            usedE.add(key(cur, next));
+            chain.push(next);
+            prev = cur; cur = next;
+        }
+        return chain;
+    };
+    for (const v of allV) {
+        if (deg(v) !== 1) continue;
+        const chain = walk(v);
+        if (chain.length >= 2) {
+            chains.push(chain);
+            for (let i = 0; i < chain.length - 1; i++) usedE.add(key(chain[i], chain[i + 1]));
+        }
+    }
+    for (const [a, b] of newEdges) {
+        if (usedE.has(key(a, b))) continue;
+        const chain = walk(a);
+        if (chain.length >= 2) chains.push(chain);
+    }
+    return chains;
+}
+
+const _vsub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const _vcross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const _vdot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const _vlen = (a) => Math.hypot(a[0], a[1], a[2]);
+
+/** Newell 多边形法线（3D 简单多边形）。 */
+function polygonNormal(pts) {
+    const n = [0, 0, 0];
+    for (let i = 0; i < pts.length; i++) {
+        const a = pts[i], b = pts[(i + 1) % pts.length];
+        n[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        n[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        n[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    return n;
+}
+
+/** 多边形面积（三角形扇，围绕首顶点）。 */
+function polygonArea(pts) {
+    let area = 0;
+    for (let i = 1; i < pts.length - 1; i++) {
+        area += 0.5 * _vlen(_vcross(_vsub(pts[i], pts[0]), _vsub(pts[i + 1], pts[0])));
+    }
+    return area;
+}
+
+/** 输入三角形质心数组（带空间网格加速查询）。 */
+function buildInputCentroidGrid(positions, tris, aliveT, cell = 0.5) {
+    const grid = new Map();
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (aliveT && !aliveT[ti]) continue;
+        const t = tris[ti];
+        const p0 = posOf(positions, t[0]), p1 = posOf(positions, t[1]), p2 = posOf(positions, t[2]);
+        const c = [(p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, (p0[2] + p1[2] + p2[2]) / 3];
+        const k = `${Math.floor(c[0] / cell)},${Math.floor(c[1] / cell)},${Math.floor(c[2] / cell)}`;
+        if (!grid.has(k)) grid.set(k, []);
+        grid.get(k).push(c);
+    }
+    return { grid, cell };
+}
+
+function nearestCentroidDist(cgrid, p) {
+    const { grid, cell } = cgrid;
+    const gx = Math.floor(p[0] / cell), gy = Math.floor(p[1] / cell), gz = Math.floor(p[2] / cell);
+    let best = Infinity;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) for (let dz = -1; dz <= 1; dz++) {
+        const arr = grid.get(`${gx + dx},${gy + dy},${gz + dz}`);
+        if (!arr) continue;
+        for (const c of arr) {
+            const d = Math.hypot(c[0] - p[0], c[1] - p[1], c[2] - p[2]);
+            if (d < best) best = d;
+        }
+    }
+    return best;
+}
+
+/**
+ * 找出输出网格中「新增闭合洞」（输入表面缺失区）。
+ * 判定：新增边界边组成链（≥2 条边）；链 + 弦形成的湾多边形面积 ≥ max(ratio×medE², 0) 且
+ * 湾质心距最近输入三角形质心 < HOLE_SOLID_DIST（输入原表面覆盖）且 mouth ≤ HOLE_MAX_MOUTH_RATIO×medE。
+ * 对每条链：链内中间顶点到弦的最大垂直距离（sagitta）/ mouth ≥ HOLE_DEPTH_RATIO（深湾）。
+ * 返回洞对象数组 [{ chain, poly, area, centroid, mouth, sagitta }]。
+ */
+export function findHoleChains(inPos, inTris, inAlive, outPos, outTris, outAlive, opts = {}) {
+    const tol = opts.tol ?? HOLE_TOL;
+    const minAreaRatio = opts.minAreaRatio ?? HOLE_MIN_AREA_RATIO;
+    const maxMouthRatio = opts.maxMouthRatio ?? HOLE_MAX_MOUTH_RATIO;
+    const depthRatio = opts.depthRatio ?? HOLE_DEPTH_RATIO;
+    const solidDist = opts.solidDist ?? HOLE_SOLID_DIST;
+    const medE = medianEdgeLength(outPos, outTris);
+    const minArea = minAreaRatio * medE * medE;
+    const maxMouth = maxMouthRatio * medE;
+    const cgrid = buildInputCentroidGrid(inPos, inTris, inAlive);
+    const newEdges = collectNewBoundaryEdges(inPos, inTris, inAlive, outPos, outTris, outAlive, tol);
+    const chains = chainNewBoundaryEdges(newEdges);
+    const holes = [];
+    for (const chain of chains) {
+        if (chain.length < 3) continue; // 单边不算湾（无中间顶点，无法判深）
+        const pts = chain.map((v) => posOf(outPos, v));
+        const A = pts[0], B = pts[pts.length - 1];
+        const AB = _vsub(B, A);
+        const mouth = _vlen(AB) || 1e-9;
+        if (mouth > maxMouth) continue;
+        let sag = 0;
+        for (let i = 1; i < pts.length - 1; i++) sag = Math.max(sag, _vlen(_vcross(_vsub(pts[i], A), AB)) / mouth);
+        if (sag / mouth < depthRatio) continue;
+        const area = polygonArea(pts);
+        if (area < minArea) continue;
+        const centroid = [0, 0, 0];
+        for (const p of pts) { centroid[0] += p[0]; centroid[1] += p[1]; centroid[2] += p[2]; }
+        centroid[0] /= pts.length; centroid[1] /= pts.length; centroid[2] /= pts.length;
+        if (nearestCentroidDist(cgrid, centroid) > solidDist) continue;
+        holes.push({ chain, poly: pts, area, centroid, mouth, sagitta: sag });
+    }
+    return holes;
+}
+
+/** 与 findHoleChains 同口径的计数（verify 断言用，防合法回缩误报取更严格阈值）。 */
+export function countNewHoleRings(inPos, inTris, inAlive, outPos, outTris, outAlive, opts = {}) {
+    const minAreaRatio = opts.minAreaRatio ?? HOLE_ASSERT_MIN_AREA_RATIO;
+    return findHoleChains(inPos, inTris, inAlive, outPos, outTris, outAlive, { ...opts, minAreaRatio }).length;
+}
+
+/**
+ * 耳切法三角化简单多边形（顶点为 3D 坐标，共面近似）。返回三角形索引三元组数组
+ * （索引指向 poly 数组）。refNormal 用于确定外向法线方向（winding 与邻接表面一致）。
+ */
+export function triangulatePolygon(poly, refNormal) {
+    if (poly.length < 3) return null;
+    const n = polygonNormal(poly);
+    const nl = _vlen(n);
+    if (nl < 1e-12) return null;
+    let nrm = [n[0] / nl, n[1] / nl, n[2] / nl];
+    if (_vdot(nrm, refNormal) < 0) nrm = [-nrm[0], -nrm[1], -nrm[2]];
+    let u = _vcross(nrm, [0, 1, 0]);
+    if (_vlen(u) < 1e-9) u = _vcross(nrm, [1, 0, 0]);
+    const ul = _vlen(u);
+    if (ul < 1e-9) return null;
+    u = [u[0] / ul, u[1] / ul, u[2] / ul];
+    const v = _vcross(nrm, u);
+    const proj = poly.map((p) => [_vdot(p, u), _vdot(p, v)]);
+    let area2 = 0;
+    for (let i = 0; i < proj.length; i++) {
+        const j = (i + 1) % proj.length;
+        area2 += proj[i][0] * proj[j][1] - proj[j][0] * proj[i][1];
+    }
+    let idx = proj.map((_, i) => i);
+    if (area2 < 0) idx.reverse();
+    const ptInTri = (p, a, b, c) => {
+        const s1 = (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+        const s2 = (c[0] - b[0]) * (p[1] - b[1]) - (c[1] - b[1]) * (p[0] - b[0]);
+        const s3 = (a[0] - c[0]) * (p[1] - c[1]) - (a[1] - c[1]) * (p[0] - c[0]);
+        const neg = s1 < 0 || s2 < 0 || s3 < 0;
+        const pos = s1 > 0 || s2 > 0 || s3 > 0;
+        return !(neg && pos);
+    };
+    const tris = [];
+    let guard = 0;
+    while (idx.length > 3 && guard++ < 100000) {
+        let earFound = false;
+        for (let i = 0; i < idx.length && !earFound; i++) {
+            const a = idx[(i - 1 + idx.length) % idx.length];
+            const b = idx[i];
+            const c = idx[(i + 1) % idx.length];
+            const pA = proj[a], pB = proj[b], pC = proj[c];
+            const cross = (pB[0] - pA[0]) * (pC[1] - pA[1]) - (pB[1] - pA[1]) * (pC[0] - pA[0]);
+            if (cross <= 1e-12) continue;
+            let inside = false;
+            for (let j = 0; j < idx.length && !inside; j++) {
+                const w = idx[j];
+                if (w === a || w === b || w === c) continue;
+                inside = ptInTri(proj[w], pA, pB, pC);
+            }
+            if (inside) continue;
+            tris.push([a, b, c]);
+            idx.splice(i, 1);
+            earFound = true;
+        }
+        if (!earFound) return null;
+    }
+    if (idx.length === 3) tris.push([idx[0], idx[1], idx[2]]);
+    else return null;
+    return tris;
+}
+
+/**
+ * 减面后补面（fix10）：检测新增闭合洞（输入表面缺失区）并三角化补面。
+ * 在 collapseMesh 折叠循环结束后、recomputeNormals 之前调用。补面只复用环上现有顶点
+ * （不新增顶点，UV/蒙皮可用），材质取环上相邻三角形材质，winding 与邻接表面一致。
+ * 返回 { aliveT, triMaterials }（可能为新扩容的数组，调用方需重新赋值）。
+ * 补面三角形数写入 stats.patchedTriangles；检测到的洞数写 stats.patchedHoles。
+ */
+export function patchHoles({
+    positions, tris, aliveT, triMaterials = null, aliveMatTri = null, numMats = 0,
+    touchedV = null, inputPositions, inputTris, inputAlive, stats = null,
+}) {
+    const holes = findHoleChains(inputPositions, inputTris, inputAlive, positions, tris, aliveT);
+    const toAdd = [];
+    for (const hole of holes) {
+        if (hole.chain.length - 1 > HOLE_CHAIN_MAX_EDGES) continue;
+        const { chain, poly } = hole;
+        // 参考法线 = 环上任一新边邻接三角形（输出侧）法线，确定补面 winding。
+        let refNormal = null;
+        for (let i = 0; i < chain.length - 1; i++) {
+            const a = chain[i], b = chain[i + 1];
+            for (let ti = 0; ti < tris.length; ti++) {
+                if (!aliveT[ti]) continue;
+                const t = tris[ti];
+                if (!(t.includes(a) && t.includes(b))) continue;
+                const n = triNormal(posOf(positions, t[0]), posOf(positions, t[1]), posOf(positions, t[2]));
+                if (_vlen(n) > 1e-12) { refNormal = n; break; }
+            }
+            if (refNormal) break;
+        }
+        if (!refNormal) continue;
+        const triIdx = triangulatePolygon(poly, refNormal);
+        if (!triIdx || !triIdx.length) continue;
+        // 材质：取环上相邻三角形材质（质心最近链上邻接三角形）
+        let material = 0;
+        if (triMaterials) {
+            const centroid = hole.centroid;
+            let bestD = Infinity;
+            for (let i = 0; i < chain.length - 1; i++) {
+                const a = chain[i], b = chain[i + 1];
+                for (let ti = 0; ti < tris.length; ti++) {
+                    if (!aliveT[ti]) continue;
+                    const t = tris[ti];
+                    if (!(t.includes(a) && t.includes(b))) continue;
+                    const p0 = posOf(positions, t[0]), p1 = posOf(positions, t[1]), p2 = posOf(positions, t[2]);
+                    const c = [(p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, (p0[2] + p1[2] + p2[2]) / 3];
+                    const d = Math.hypot(c[0] - centroid[0], c[1] - centroid[1], c[2] - centroid[2]);
+                    if (d < bestD) { bestD = d; material = triMaterials[ti]; }
+                }
+            }
+        }
+        for (const [i0, i1, i2] of triIdx) {
+            const t = [chain[i0], chain[i1], chain[i2]];
+            if (t[0] === t[1] || t[1] === t[2] || t[0] === t[2]) continue;
+            if (triArea(posOf(positions, t[0]), posOf(positions, t[1]), posOf(positions, t[2])) < DEGENERATE_AREA) continue;
+            toAdd.push({ t, material });
+        }
+    }
+    let newAliveT = aliveT;
+    let newTriMaterials = triMaterials;
+    if (toAdd.length) {
+        // 扩容（aliveT/triMaterials 为 TypedArray，不能 push）
+        if (aliveT.constructor === Uint8Array) {
+            const grown = new Uint8Array(aliveT.length + toAdd.length);
+            grown.set(aliveT);
+            newAliveT = grown;
+        } else {
+            for (let i = 0; i < toAdd.length; i++) aliveT.push(1);
+        }
+        if (triMaterials) {
+            if (triMaterials.constructor === Uint16Array) {
+                const grown = new Uint16Array(triMaterials.length + toAdd.length);
+                grown.set(triMaterials);
+                newTriMaterials = grown;
+            } else {
+                for (let i = 0; i < toAdd.length; i++) triMaterials.push(0);
+            }
+        }
+        for (let i = 0; i < toAdd.length; i++) {
+            const { t, material } = toAdd[i];
+            const ti = tris.length;
+            tris.push(t);
+            newAliveT[ti] = 1;
+            if (newTriMaterials) newTriMaterials[ti] = material;
+            if (aliveMatTri && material >= 0 && material < numMats) aliveMatTri[material]++;
+            if (touchedV) for (const v of t) touchedV[v] = 1;
+        }
+    }
+    if (stats) {
+        stats.patchedHoles = holes.length;
+        stats.patchedTriangles = toAdd.length;
+    }
+    return { aliveT: newAliveT, triMaterials: newTriMaterials };
+}
 // 双面微片锁定阈值：面积 < FLIP_LOCK_AREA 且与任一邻居法线夹角 > FLIP_LOCK_ANGLE 的三角形
 // （指甲/指缝双面薄片：两三角共边、法线相反 150°~172°、面积 ≤5e-4）→ 锁定其 3 顶点。
 // 双面微片是合法几何（指甲正反面），不能删/不能合并，只能锁 = 100% 保留外观。
@@ -1121,7 +1495,8 @@ export function collapseMesh({
     // 供 touched 顶点平均时排除与该原始法线夹角 >60° 的邻接面（保留分裂法线边缘语义）。
     const inputNormals = vertices.map((v) => v.normal.slice());
     const tris = triangles.map((t) => t.slice());
-    const aliveT = new Uint8Array(tris.length).fill(1);
+    const inputTriCount = tris.length;
+    let aliveT = new Uint8Array(tris.length).fill(1);
 
     // 双面微片锁定（守卫 2）：指甲/指缝双面薄片顶点全锁，100% 保留外观。
     // 用原始顶点对象（position 未参与折叠），与 collapseMesh 内部分发 positions 拷贝解耦。
@@ -1508,6 +1883,18 @@ export function collapseMesh({
         }
     }
 
+    // 减面后补面（fix10）：检测「新增闭合洞」（输入表面缺失区）并三角化补面。
+    // 折叠守卫（linkConditionValid/collapseCreatesHoleNarrow 等）在源头拦下多数洞，但
+    // Tda 两腿之间/大腿内侧/裙摆深湾等错误折叠仍会产生输入表面缺失（真洞，兄弟截图实证）。
+    // 补面只复用环上现有顶点（不新增顶点，UV/蒙皮可用），材质取环上相邻三角形，winding 与
+    // 邻接表面一致；只补「新增的真洞」（输入原表面覆盖的深湾），不补输入就存在的开放边界/裙摆开口。
+    const patchRet = patchHoles({
+        positions, tris, aliveT, triMaterials, aliveMatTri, numMats, touchedV,
+        inputPositions, inputTris, inputAlive, stats,
+    });
+    aliveT = patchRet.aliveT;
+    triMaterials = patchRet.triMaterials;
+
     // 减面后洞校验（只读）：输出边界边中点距输入边界边线段距离 > HOLE_TOL → 计 stats.newHoleEdges。
     // 与折叠顺序解耦的兜底（顺序再变，最终输出也保证无洞）；只统计不阻断（verify/BDD 断言 0）。
     stats.newHoleEdges = countSpatiallyNewBoundaryEdges(inputPositions, inputTris, inputAlive, positions, tris, aliveT);
@@ -1546,11 +1933,18 @@ export function collapseMesh({
     }
     const newTris = [];
     const keptTriIndices = [];
+    const patchedTris = [];
     for (let ti = 0; ti < tris.length; ti++) {
         if (!aliveT[ti]) continue;
         const [a, b, c] = tris[ti];
-        newTris.push([indexMap[a], indexMap[b], indexMap[c]]);
-        keptTriIndices.push(ti);
+        const remapped = [indexMap[a], indexMap[b], indexMap[c]];
+        if (ti < inputTriCount) {
+            newTris.push(remapped);
+            keptTriIndices.push(ti);
+        } else {
+            // fix10 补面三角形（ti ≥ 输入三角形数）：材质按 triMaterials[ti]（补面时已记录）
+            patchedTris.push({ indices: remapped, material: triMaterials ? triMaterials[ti] : 0 });
+        }
     }
 
     // 材质保护统计：每材质原始/最低/最终三角形数 + 保护类型
@@ -1572,8 +1966,8 @@ export function collapseMesh({
         }
     }
     stats.protectedStats = protectedStats;
-    stats.finalTriangles = newTris.length;
-    return { vertices: newVerts, triangles: newTris, indexMap, keptTriIndices, stats };
+    stats.finalTriangles = newTris.length + patchedTris.length;
+    return { vertices: newVerts, triangles: newTris, patchedTris, indexMap, keptTriIndices, stats };
 }
 
 

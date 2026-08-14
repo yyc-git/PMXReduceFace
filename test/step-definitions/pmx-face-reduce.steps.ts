@@ -266,6 +266,12 @@ interface Facts {
     outSame: number;
     outNew: number;
   };
+  unitHolePatch: {
+    detectedHoles: number;
+    retractionHoles: number;
+    patchedTriangles: number;
+    holesAfterPatch: number;
+  };
   unitTouchedNormals: {
     collapses: number;
     lockedPreserved: boolean;
@@ -976,6 +982,30 @@ defineFeature(feature, (test) => {
         });
         and(/^verify 输出 noNewHoles 为 true（新增洞全局断言仍跑）$/, () => {
             expect(facts.verify05.checks.noNewHoles).toBe(true);
+        });
+    });
+
+    test('折叠后新增小洞被补面且合法回缩不误报', ({ given, and, when, then }) => {
+        given(/^构造带新增深湾洞的局部网格（8×5 网格挖掉顶部中心 A-X-B 区，输入原表面覆盖）$/, () => {
+            facts = null;
+        });
+        and(/^构造合法回缩网格（顶部整行浅窄条带移除）$/, () => {
+            facts = runHelper();
+        });
+        when(/^直接调用 qem\.mjs 的 findHoleChains 与 patchHoles$/, () => {
+            expect(facts.unitHolePatch).toBeTruthy();
+        });
+        then(/^findHoleChains 检出洞数 ≥1（输入覆盖深湾 = 真洞）$/, () => {
+            expect(facts.unitHolePatch.detectedHoles).toBeGreaterThanOrEqual(1);
+        });
+        and(/^patchHoles 补面三角形数 ≥1（补面生效，三角化补面）$/, () => {
+            expect(facts.unitHolePatch.patchedTriangles).toBeGreaterThanOrEqual(1);
+        });
+        and(/^补面后 findHoleChains 洞数为 0（洞被填平）$/, () => {
+            expect(facts.unitHolePatch.holesAfterPatch).toBe(0);
+        });
+        and(/^合法回缩网格 findHoleChains 洞数为 0（浅宽回缩不误报，fix5 教训）$/, () => {
+            expect(facts.unitHolePatch.retractionHoles).toBe(0);
         });
     });
 });

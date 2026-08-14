@@ -55,6 +55,8 @@ let AREA_FLOOR_RATIO = 0.5;
 let qemComputeSizeStats = null;
 let qemCollapseOversize = null;
 let verifyCountNewFingertipProtrusions = null;
+let qemFindHoleChains = null;
+let qemPatchHoles = null;
 try {
   const verifyMod = await import('../../src/tool/pmx-face-reduce/verify.mjs');
   if (typeof verifyMod.countNewFingertipProtrusions === 'function') verifyCountNewFingertipProtrusions = verifyMod.countNewFingertipProtrusions;
@@ -82,6 +84,10 @@ try {
   if (typeof qem.AREA_FLOOR_RATIO === 'number') AREA_FLOOR_RATIO = qem.AREA_FLOOR_RATIO;
   if (typeof qem.computeVertexSizeStats === 'function') qemComputeSizeStats = qem.computeVertexSizeStats;
   if (typeof qem.collapseCreatesOversizeTriangle === 'function') qemCollapseOversize = qem.collapseCreatesOversizeTriangle;
+  // fix10 补洞：findHoleChains / patchHoles（新增闭合洞检测 + 三角化补面）。RED 时被临时 revert
+  // 无这些导出 → 本地兜底（检出 0 洞 / 不补面）→ 新增补洞场景断言失败（红）。
+  if (typeof qem.findHoleChains === 'function') qemFindHoleChains = qem.findHoleChains;
+  if (typeof qem.patchHoles === 'function') qemPatchHoles = qem.patchHoles;
 } catch (e) { /* 修复前 qem.mjs：本地常量/实现兜底（值固定为修复引入的 0.08/120/1e-3） */ }
 
 // 突起守卫（优先 qem.mjs；RED 验证时 qem.mjs 被临时 revert 无该导出 → 恒 false 放行 → 断言失败）
@@ -179,6 +185,16 @@ function computeVertexSizeStats(...args) {
 function collapseCreatesOversizeTriangle(...args) {
   if (qemCollapseOversize) return qemCollapseOversize(...args);
   return false;
+}
+// 新增闭合洞检测（优先 qem.mjs；RED 验证时 → 空数组 → 补洞场景检出断言红）
+function findHoleChains(...args) {
+  if (qemFindHoleChains) return qemFindHoleChains(...args);
+  return [];
+}
+// 三角化补面（优先 qem.mjs；RED 验证时 → 不补面（返回空结果）→ patchedTriangles=0 → 断言红）
+function patchHoles(args) {
+  if (qemPatchHoles) return qemPatchHoles(args);
+  return { aliveT: null, triMaterials: null };
 }
 
 // 边长统计（优先 qem.mjs；fallback 与 qem.triEdgeStats 实现一致）
@@ -1517,6 +1533,60 @@ function parseOutput(p) {
     facts.sphereOutMaxOver = { maxL: +overL.toFixed(4), area: +overA.toFixed(4) };
     facts.sphereOutWithinSize = overL <= 0 && overA <= 0;
   }
+}
+
+// ---------- fix10 补洞单元测试（折叠后新增小洞被补面 / 合法回缩不误报） ----------
+// 合成「输入原表面覆盖的深湾」局部网格（模拟 Tda 两腿之间 V 形洞）：8×5 平面网格（cell=1），
+// 挖掉顶部中心三角形区 A=(3,5)→X=(4,2)→B=(5,5)（bay 面积 5 > 2×medE²=2，环长 7 ≤ 8）→
+// 输出边界在输入直边界上切出深湾（新增边界边链 A..X..B，输入原表面覆盖 = 真洞）。
+// 断言 findHoleChains 检出 ≥1、patchHoles 补面 patchedTriangles ≥1、补面后 findHoleChains 为 0；
+// 合法回缩（顶部整行浅窄条带移除，bay 浅而宽）不得误判（0 洞，fix5 教训）。
+// RED 能力：把 qem.mjs 的 findHoleChains/patchHoles 删除 → 本地兜底检出 0 / 补 0 → 断言红。
+{
+  const W = 8, H = 5;
+  const holePositions = [];
+  const idx = (c, r) => r * (W + 1) + c;
+  for (let r = 0; r <= H; r++) for (let c = 0; c <= W; c++) holePositions.push([c, r, 0]);
+  const gridTris = [];
+  for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) {
+    const a = idx(c, r), b = idx(c + 1, r), d = idx(c, r + 1), e = idx(c + 1, r + 1);
+    gridTris.push([a, b, e], [a, e, d]);
+  }
+  const inTri = (p, a, b, c) => {
+    const sign = (p1, p2, p3) => (p1[0] - p3[0]) * (p2[1] - p3[1]) - (p2[0] - p3[0]) * (p1[1] - p3[1]);
+    const d1 = sign(p, a, b), d2 = sign(p, b, c), d3 = sign(p, c, a);
+    return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+  };
+  const pA = holePositions[idx(3, H)], pB = holePositions[idx(5, H)], pX = holePositions[idx(4, 2)];
+  const holeTris = [];
+  for (const t of gridTris) {
+    const p0 = holePositions[t[0]], p1 = holePositions[t[1]], p2 = holePositions[t[2]];
+    const cen = [(p0[0] + p1[0] + p2[0]) / 3, (p0[1] + p1[1] + p2[1]) / 3, 0];
+    if (inTri(cen, pA, pX, pB)) continue;
+    holeTris.push(t);
+  }
+  const retTris = [];
+  for (const t of gridTris) {
+    const p0 = holePositions[t[0]], p1 = holePositions[t[1]], p2 = holePositions[t[2]];
+    if ((p0[1] + p1[1] + p2[1]) / 3 > H - 0.6) continue;
+    retTris.push(t);
+  }
+  const detected = findHoleChains(holePositions, gridTris, null, holePositions, holeTris, null).length;
+  const detectedRetraction = findHoleChains(holePositions, gridTris, null, holePositions, retTris, null).length;
+  const aliveT = new Uint8Array(holeTris.length).fill(1);
+  const stats = {};
+  const patchRet = patchHoles({
+    positions: holePositions, tris: holeTris, aliveT, inputPositions: holePositions, inputTris: gridTris, inputAlive: null, stats,
+  });
+  const holesAfterPatch = patchRet && patchRet.aliveT
+    ? findHoleChains(holePositions, gridTris, null, holePositions, holeTris, patchRet.aliveT).length
+    : detected;
+  facts.unitHolePatch = {
+    detectedHoles: detected,
+    retractionHoles: detectedRetraction,
+    patchedTriangles: stats.patchedTriangles || 0,
+    holesAfterPatch,
+  };
 }
 
 // 原文件字节不变（操作后）

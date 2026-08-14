@@ -90,7 +90,7 @@ export function reduceFaces({
     }
 
     // QEM 边折叠（targetRatio < 1 时丢弃输入已有的退化三角形，roundtrip 保留原样）
-    const { vertices, triangles: newTriangles, indexMap, keptTriIndices, stats } = collapseMesh({
+    const { vertices, triangles: newTriangles, patchedTris = [], indexMap, keptTriIndices, stats } = collapseMesh({
         vertices: model.vertices,
         triangles,
         locked,
@@ -123,18 +123,40 @@ export function reduceFaces({
         }
     }
 
+    // fix10 补面三角形合并：插入对应材质段末尾（保持材质连续，writer 按 faceCount 顺序写 faces）。
+    const finalTriangles = [];
+    const finalMaterialTriCounts = new Array(model.materials.length).fill(0);
+    {
+        const buckets = [];
+        let off = 0;
+        for (let mi = 0; mi < model.materials.length; mi++) {
+            const cnt = materialTriCounts[mi] || 0;
+            buckets.push(newTriangles.slice(off, off + cnt));
+            off += cnt;
+        }
+        for (const pt of patchedTris) {
+            const mi = pt.material;
+            if (mi >= 0 && mi < buckets.length) buckets[mi].push(pt.indices);
+            else buckets[buckets.length - 1].push(pt.indices);
+        }
+        for (let mi = 0; mi < buckets.length; mi++) {
+            finalMaterialTriCounts[mi] = buckets[mi].length;
+            for (const t of buckets[mi]) finalTriangles.push(t);
+        }
+    }
+
     // 字节级重写
     const buf = fs.readFileSync(input);
     const sections = locateSections(buf, model.metadata);
     const out = buildDecimatedPmx(buf, sections, model.metadata, {
         vertices,
-        triangles: newTriangles,
-        materialTriCounts,
+        triangles: finalTriangles,
+        materialTriCounts: finalMaterialTriCounts,
         indexMap,
     });
     fs.writeFileSync(output, out);
 
-    const reduction = (1 - newTriangles.length / totalTri) * 100;
+    const reduction = (1 - finalTriangles.length / totalTri) * 100;
     // 受保护材质列表（材质级锁定）：index + origTri，便于验证保留率
     const protectedMaterials = lockMaterials && lockMaterials.length
         ? lockMaterials.map((mi) => ({
@@ -148,7 +170,7 @@ export function reduceFaces({
         originalVertices: model.metadata.vertexCount,
         newVertices: vertices.length,
         originalTriangles: totalTri,
-        newTriangles: newTriangles.length,
+        newTriangles: finalTriangles.length,
         targetTriangles: targetTri,
         lockedCount: locked.size,
         lockMaterials: lockMaterials || [],
@@ -156,8 +178,10 @@ export function reduceFaces({
         minRetention,
         lockSmallMaterials,
         materialProtection: stats.protectedStats || [],
+        patchedHoles: stats.patchedHoles || 0,
+        patchedTriangles: stats.patchedTriangles || 0,
         reductionRatio: reduction,
-        reductionMet: newTriangles.length <= targetTri,
+        reductionMet: finalTriangles.length <= targetTri,
         collapses: stats.collapses,
         rejected: stats.rejected,
         shapeRejects: stats.shapeRejects,
@@ -169,7 +193,7 @@ export function reduceFaces({
         materialRejects: stats.materialRejects,
         newHoleEdges: stats.newHoleEdges,
         durationMs: Date.now() - t0,
-        perMaterial: model.materials.map((m, i) => ({ index: i, name: m.name, origTri: m.faceCount, newTri: materialTriCounts[i] })),
+        perMaterial: model.materials.map((m, i) => ({ index: i, name: m.name, origTri: m.faceCount, newTri: finalMaterialTriCounts[i] })),
     };
     return result;
 }

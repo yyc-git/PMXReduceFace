@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadPmx } from '../lib/pmx-loader.mjs';
 import { buildLockedSet, VERTEX_MORPH_TYPES } from './lock-set.mjs';
-import { triArea, SMALL_MATERIAL_TRI, triEdgeStats, maxProtrudeOfVerts, buildEdgeTris, buildBoundaryEdgeGrid, pointSegDist2, HOLE_TOL, countSpatiallyNewBoundaryEdges } from './qem.mjs';
+import { triArea, SMALL_MATERIAL_TRI, triEdgeStats, maxProtrudeOfVerts, buildEdgeTris, buildBoundaryEdgeGrid, pointSegDist2, HOLE_TOL, findHoleChains, HOLE_ASSERT_MIN_AREA_RATIO } from './qem.mjs';
 
 const POS_TOL = 1e-6;
 const MORPH_TOL = 1e-5;
@@ -540,24 +540,28 @@ export function verifyFaces({
             quality.nonManifoldEdges = nonManifold;
             checks.noNonManifoldEdges = nonManifold === 0;
 
-            // 空间无新增洞：有 BurumaSet → 限定袜子区域（薄壳破面判定区，fix5/§1.4 点 5：全模型开放
-            // 边界合法回缩 0.2~1.0 不算洞，故断言范围限定袜子区域，fix6-plan §9：unmatchedBndCount ≤ 1）。
-            // 无 BurumaSet → 退化为全模型空间新洞检查（countSpatiallyNewBoundaryEdges）但保守跳过严格断言：
-            // fix5 教训「开放边界正常回缩不算洞」（XiaoMei 全模型 41、Tda 约 21 个回缩边界边均非洞），
-            // 全模型计数天然含合法回缩 → 严格断言会对真实模型误报，故仅报告计数供人工复查。
+            // 空间无新增洞（fix10 全局严格断言，任何模型都执行，不依赖 BurumaSet）：
+            // 只断言「新增闭合洞环」（输出新增边界边组成深湾、输入原表面覆盖的真洞），把
+            // 「开放边界合法回缩」（回缩湾浅而宽 / 单边位移）与真洞区分开（fix5 教训）。
+            // 阈值（HOLE_ASSERT_MIN_AREA_RATIO × 输出 medE² / 深度比 / mouth 上限）经 Tda（RED，
+            // 4 洞）与 XiaoMei（GREEN，0 洞）实测校准：XiaoMei 头部穹顶 0.2 级浅湾在阈值下不误报。
+            const holeRings = findHoleChains(origPos, origTri, null, decPos, decTri, null, { minAreaRatio: HOLE_ASSERT_MIN_AREA_RATIO });
+            quality.holeRings = holeRings.map((h) => ({
+                area: Number(h.area.toFixed(3)),
+                mouth: Number(h.mouth.toFixed(3)),
+                chainLength: h.chain.length,
+                centroid: h.centroid.map((v) => Number(v.toFixed(2))),
+            }));
+            checks.noNewHoles = holeRings.length === 0;
+            // 有 BurumaSet 时额外保留袜区口径（薄壳破面判定区，fix5/§1.4 点 5，fix6-plan §9 ≤1）：
+            // 全局洞断言已覆盖袜区真洞，此处作为补充报告（不参与 noNewHoles，防双重计数）。
             if (bMatOut) {
                 const sockNewHoles = countNewSockBoundaryEdges(origPos, origTri, decPos, decTri, bMatOut);
                 quality.sockNewHoles = sockNewHoles;
-                checks.noNewHoles = sockNewHoles <= 1;
-            } else if (bMat === null) {
-                const fullNewBnd = countSpatiallyNewBoundaryEdges(origPos, origTri, null, decPos, decTri, null);
-                quality.sockNewHoles = fullNewBnd;
-                quality.noNewHolesSkipped = 'no BurumaSet: full-model open-boundary retraction tolerated (fix5); count reported for manual review';
-                checks.noNewHoles = true;
+                checks.sockRegionNewHoles = sockNewHoles <= 1;
             } else {
-                // bMat 存在但输出丢失全部 BurumaSet 三角形：旧语义 sockNewHoles=1（严格）
-                quality.sockNewHoles = 1;
-                checks.noNewHoles = true;
+                quality.sockNewHoles = null;
+                checks.sockRegionNewHoles = true;
             }
 
             // ===== 材质相关检查（仅 BurumaSet 存在时激活，受 qualityChecksActive 门控） =====
