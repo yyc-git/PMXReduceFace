@@ -15,6 +15,10 @@
 - **突起大鼓包防护（第六轮 P1）**：突起超过基础阈值**且**三角形面积超过「局部输入面积预算 × AREA_COEF」的大三角形（大 + 鼓 = 圆锥体）→ 拒绝。指尖鼓包 tri#10122（protrude 0.088 > 0.066 且 area 0.0262 > 1.3×0.012）被拒；小三角形（≤ 局部面积预算）保留预算许可，高曲率区合法微凸起不误杀
 - **曲率感知三角形尺寸守卫（第六轮 P0）**：QEM 的 quadric 误差是平面拟合误差，对「跨曲率合并」失明——球面相邻小三角几乎共面（误差≈0 免费折叠）→ 合并成跨曲面大平面 → 袜子/内裤屁股「破面」。本守卫对每个折叠候选预计算每顶点「局部输入尺寸预算」（邻接输入三角形 maxL/面积 p95，`computeVertexSizeStats`）与「局部曲率」（邻接法线夹角最大值）；折叠后新三角形超过 `max(全局下限, 系数 × 三顶点最小预算)` **且** 顶点曲率 ≥ `CURV_MIN_DEG`(12°) → 拒绝（`collapseCreatesOversizeTriangle`）。曲率门控保证平坦区（网格 fixture/大腿平面）不受限，不误杀减面
 - **双面微片锁定**：面积 < 1e-3 且与邻居法线夹角 >120° 的指甲/指缝双面薄片，顶点全锁 100% 保留 —— 杜绝折叠放大/恶化成翻转面
+- **指尖尖刺消除（第七轮）**：突起守卫增强为「全指尖区域新增尖刺检测」（|x|>7, 13<y<16，距输入突起质心 >0.25 判新增）+ 守卫参数 PROTRUDE_MAX 0.045 / PROTRUDE_RATIO 0.32 —— 指尖内外侧尖刺（protrude 0.05-0.052 漏过旧断言）彻底消失，断言从「只比数量」升级为「覆盖位置（距质心距离）」
+- **未触碰顶点法线保留（第八轮）**：`recomputeNormals` 只重算参与过折叠的顶点（touchedV），其余存活顶点保留输入法线（方案 B：排除与原始法线夹角 >60° 的邻接面）—— 修复分层拼块模型（如礼服肩窝）接缝处法线被全局重写为面积加权平均导致的分裂法线破坏（Tda 肩窝 33.6°→85.6°、108 翻转点 → 全归零）
+- **通用质量断言（第九轮）**：`verify.mjs` 的全局性检查（noNewOversizeTriangles / noNonManifoldEdges / noNewHoles）解耦 BurumaSet 材质绑定，**任何模型无条件执行** —— 无 BurumaSet 材质的模型（如 Tda 礼服）不再跳过质量断言（此前左大腿 4.8× 超尺寸三角漏检）；另加输入全局 maxL p99 上限封住跨曲面合并
+- **减面后补洞（第十轮）**：折叠完成后检测「新增闭合边界环」（输入原表面覆盖的深沟，判据：环 ≥2 边、面积 ≥ 阈值×medE²、sagitta/mouth 阈值、环质心距输入三角形 <0.6 区分真洞 vs 合法回缩），对环长 ≤8 的洞**耳切法三角化补面**（复用环上顶点不新增、winding 与邻接一致、材质取相邻三角形）—— Tda 礼服两腿间/腋下等折叠引入的真洞被补齐（补 4 洞），XiaoMei 补 3 洞无回归；`stats.newHoleEdges` 22→5（残余为浅回缩非深沟）
 - **保留 morph**：顶点位移/UV 等 morph 引用的顶点全部进入锁定集，折叠后 morph 索引自动重映射
 - **保留 UV 接缝**：空间重合顶点聚类（`findSeamClusters`），接缝两侧顶点锁定，UV 贴图不撕裂
 - **小材质自动保护**：原始面数 ≤ 500 的材质（眼睛、睫毛等细节）默认 100% 保留
@@ -40,7 +44,7 @@ yarn install
 ### 减面 + 验证
 
 ```bash
-yarn test:bdd       # BDD 全绿（29 场景）
+yarn test:bdd       # BDD 全绿（34 场景）
 npx tsc --noEmit    # 类型检查
 ```
 
@@ -264,7 +268,7 @@ PMXReduceFace/
 ## ✅ 测试
 
 ```bash
-yarn test:bdd          # BDD（jest-cucumber，29 场景）：合成 fixture（纯字节生成 PMX，无真实模型依赖）
+yarn test:bdd          # BDD（jest-cucumber，34 场景）：合成 fixture（纯字节生成 PMX，无真实模型依赖）
 npx tsc --noEmit       # 类型检查（demo/main.ts / test steps 是 .ts）
 
 # 可选：真实模型集成检查（不进 test:bdd；对 demo/assets 模型跑 reduce + verify 输出 JSON 报告）
@@ -273,9 +277,9 @@ node scripts/real-model-check.mjs --input your.pmx --target-ratio 0.55 --keep
 node scripts/real-model-check.mjs --skip-quality   # 跳过视觉质量断言（无 BurumaSet 材质的自定义模型）
 ```
 
-BDD 覆盖：输出可重解析 / 面数减半 / morph 锁定位置不变 / 无退化 + 权重归一化 / 材质-header 一致 / 原文件字节不变 / roundtrip 零改动 / 法线单位长度 / `--target-tri` 绝对目标 / 自动材质保护（min-retention 触发）/ `--lock-materials` 材质级锁定 / dropDegenerate 丢弃零面积 + 重复索引退化三角形 / sliver 守卫（单元级 + 管状 fixture 集成级 + 细管手指 fixture 集成级）/ 拓扑守卫（link condition + 洞检测）/ fold-over 翻转守卫 / 突起守卫 + 预算 cap（单元级 + 指尖 fixture 集成级）/ 洞守卫收窄（removesSlit 只豁免共点边分离）/ 混合 fixture 输出边界边空间包含于输入 / **曲率感知尺寸守卫（第六轮 E 单元级：高曲率超尺寸拒 / 平坦不误杀 / 尺寸内放行；F 集成级：球面 fixture 输出无跨曲面超尺寸）** / **突起大鼓包守卫（第六轮 E2 单元级）**。
+BDD 覆盖：输出可重解析 / 面数减半 / morph 锁定位置不变 / 无退化 + 权重归一化 / 材质-header 一致 / 原文件字节不变 / roundtrip 零改动 / 法线单位长度 / `--target-tri` 绝对目标 / 自动材质保护（min-retention 触发）/ `--lock-materials` 材质级锁定 / dropDegenerate 丢弃零面积 + 重复索引退化三角形 / sliver 守卫（单元级 + 管状 fixture 集成级 + 细管手指 fixture 集成级）/ 拓扑守卫（link condition + 洞检测）/ fold-over 翻转守卫 / 突起守卫 + 预算 cap（单元级 + 指尖 fixture 集成级）/ 洞守卫收窄（removesSlit 只豁免共点边分离）/ 混合 fixture 输出边界边空间包含于输入 / **曲率感知尺寸守卫（第六轮 E 单元级：高曲率超尺寸拒 / 平坦不误杀 / 尺寸内放行；F 集成级：球面 fixture 输出无跨曲面超尺寸）** / **突起大鼓包守卫（第六轮 E2 单元级）** / **指尖尖刺折叠拒绝与新增尖刺检测（第七轮 G/H 场景）** / **未触碰顶点保留输入法线（第八轮场景）** / **折叠后新增小洞被补面且合法回缩不误报（第十轮场景）**。
 
-**质量断言（第六轮新增，`verify.mjs` checks + `yarn test:real` 强制）**：`burumaAreaP99Growth`（BurumaSet 面积 p99 ≤ 输入×1.5）/ `burumaMaxLP90Growth`（maxL p90 ≤ 输入×1.5）/ `fingertipProtrudeShape`（指尖突起数量与最大面积 ≤ 输入）/ `noNewOversizeTriangles`（全局跨曲面新增超尺寸 = 0）/ `noNonManifoldEdges`（= 0）/ `noNewHoles`（袜区新增洞 ≤ 1）。阈值全部运行时从输入实测，断言只含增长系数，不硬编码被测值；无 BurumaSet 材质（合成 fixture）时各质量项自动跳过。
+**质量断言（第六轮起，`verify.mjs` checks + `yarn test:real` 强制；fix9 解耦为任何模型无条件执行）**：`burumaAreaP99Growth`（BurumaSet 面积 p99 ≤ 输入×1.5）/ `burumaMaxLP90Growth`（maxL p90 ≤ 输入×1.5）/ `fingertipProtrudeShape`（指尖突起数量与最大面积 ≤ 输入）/ `noNewOversizeTriangles`（全局跨曲面新增超尺寸 = 0）/ `noNonManifoldEdges`（= 0）/ `noNewHoles`（袜区新增洞 ≤ 1）。阈值全部运行时从输入实测，断言只含增长系数，不硬编码被测值；无 BurumaSet 材质（合成 fixture）时各质量项自动跳过；fix9 起全局性检查（noNewOversizeTriangles / noNonManifoldEdges / noNewHoles）不再随 BurumaSet 跳过，任何模型都断言，Tda 礼服等无 BurumaSet 模型同样受保护。noNewHoles 用闭环洞检测（`findHoleChains`，阈值 8×medE²）区分真新增洞与开放边界合法回缩（fix5 教训），fix10 起配合折叠后补面（耳切法补新增洞环）。
 
 ## 📄 License
 
@@ -572,3 +576,4 @@ BDD coverage: output re-parseable / faces halved / morph-locked positions unchan
 ---
 
 **Source**: derived from the mmd_tool package of the GTS-Play project, released standalone under MIT. Issues welcome at [GitHub Issues](https://github.com/yyc-git/PMXReduceFace/issues).
+
