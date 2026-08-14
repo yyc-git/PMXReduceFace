@@ -277,6 +277,19 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     And 输出与输入相同时新增 0（outSame=0，无误报）
     And 输出含远离输入突起的簇 B 时新增 ≥1（outNew≥1，内带尖刺形态必被抓）
 
+  # ★ fix8 法线 touchedV 过滤（单元级）：recomputeNormals 只重算参与过折叠的顶点，
+  # 锁定/未触碰顶点保留输入法线（Tda 接缝分裂法线语义不因全局重写破坏）
+  # 5×5 平面网格（z=0，25 顶点 / 32 三角形），边界环锁定（16 顶点，锁定顶点永不参与折叠），
+  # 锁定顶点输入法线 [1,0,0] 与平面邻面面积加权平均 [0,0,1] 正交 → 无过滤时被改写（RED）、有过滤保留（GREEN）。
+  # RED 能力：把 recomputeNormals 的 touchedV 过滤去掉（全局重写）→ lockedPreserved 变 false → 红
+  Scenario: 未触碰顶点保留输入法线（touchedV 法线重写过滤）
+    Given 构造 5×5 平面网格（边界环锁定，输入法线 [1,0,0] 与邻面平均 [0,0,1] 正交）
+    When 直接调用 qem.mjs 的 collapseMesh（targetTriangles=8）
+    Then 确实发生了折叠（stats.collapses > 0，断言前提成立）
+    And 输入法线均为单位长度（前置，redCapable 区分「保留/重写」）
+    And 所有锁定（未触碰）顶点输出法线 === 输入法线（保留）
+    And 全部输出顶点法线单位长度（折叠顶点重算后仍归一化）
+
   # ★ 曲率感知尺寸守卫（第六轮 Scenario F，P0 集成级）：球面 fixture 减面输出无跨曲面超尺寸三角形
   # R=1 经纬球 seg=8/rings=8 → 128 输入三角形，每顶点曲率最低 20.8° > CURV_MIN_DEG(20°) → 门控全表面生效；
   # 输入无 sliver/无洞。target-ratio 0.5 下守卫开启 → 输出每个三角形 maxL/面积 ≤ max(floor, 系数 × 每顶点预算上限)

@@ -207,6 +207,11 @@ function loadLod(name: string): void {
       mesh = m;
       scene.add(mesh);
       curName = name;
+      // [TEMP-TEST] ?wire=1 线框调试：看网格拓扑（洞/缺口）
+      if (new URLSearchParams(window.location.search).has('wire')) {
+        const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+        for (const mat of mats) if (mat && 'wireframe' in mat) (mat as { wireframe?: boolean }).wireframe = true;
+      }
       if (!framed) {
         frameModel(m);
         framed = true;

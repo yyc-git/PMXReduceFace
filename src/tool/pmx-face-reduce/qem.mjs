@@ -63,6 +63,11 @@ export function protrudeCap(medE) {
 // 减面后洞校验容差（第五轮）：输出边界边中点距输入边界边线段距离超过该值 → 视为「新增洞」。
 // 让洞保护与折叠顺序解耦的兜底：折叠顺序再变，最终输出也保证无洞。
 export const HOLE_TOL = 0.2;
+// fix8 方案B：法线重算时 touched 顶点排除「邻接面法线与该顶点原始法线夹角 > 该角度」的面。
+// Tda 肩窝分层拼块（手套/身体/礼服花纹空间重叠拓扑分离）折叠后跨层邻接面混入同一顶点，
+// 面积平均把它们混在一起 → 法线偏离原始分裂法线语义（实测 24 处 out-in >40° 翻转点全来自
+// 此路径）。平滑区所有邻接面都在 60° 内 → 过滤无副作用（XiaoMei/合成 fixture 不受影响）。
+export const NORMAL_FILTER_DEG = 60;
 
 // 曲率感知三角形尺寸守卫（第六轮 P0）常量。全部基于 fix5 产物实测校准（docs/fix6-plan.md §1/§2.4）：
 // - 屁股球面（BurumaSet 袜子/内裤，球半径≈1）局部输入 maxL p95≈0.49 / 面积 p95≈0.043，QEM 把 4-8 个
@@ -956,26 +961,47 @@ export function collectFlipMicroFaceVertices(positions, tris) {
 
 /**
  * 对存活顶点重新计算法线：邻接三角形面法线按面积加权累加后归一化。
- * 折叠循环结束后调用——仅修正法线方向，不动顶点位置；
- * 作用于所有存活顶点（含锁定顶点）：锁定顶点位置不变，但法线可能被改写。
+ * 折叠循环结束后调用——仅修正法线方向，不动顶点位置。
+ * 缺省作用于所有存活顶点（含锁定顶点）：锁定顶点位置不变，但法线可能被改写。
+ * touchedV 传入时（fix8）：只重算 touchedV[i]===1 的顶点；其余存活顶点保留输入法线
+ * （PMX 输入法线是单位向量，接缝分裂法线语义得以保留，不会被邻接面平均改写）。
+ * inputNormals + touchedV 同时传入时（fix8 方案B）：touched 顶点平均时排除与该顶点
+ * 原始法线夹角 >60° 的邻接面——Tda 肩窝分层拼块（手套/身体/礼服花纹空间重叠拓扑分离），
+ * 折叠会把跨层拼块的邻接面并入同一顶点，面积平均把它们混在一起 → 法线偏离该顶点原始语义
+ * （实测 24 处 out-in >40° 翻转点）。排除后只剩「属于该顶点法线方向」的面参与平均，
+ * 分裂法线边缘语义保留；平滑区所有邻接面均在 60° 内 → 过滤无副作用。
  * 面积和 < 1e-12 的顶点保留原法线（归一化后）。
  * @param {any[]} vertices 顶点数组（normal 会被就地改写）
  * @param {number[][]} positions 当前位置
  * @param {number[][]} tris 三角形（含存活/死亡标记）
  * @param {Uint8Array} aliveV 顶点存活标记
  * @param {Uint8Array} aliveT 三角形存活标记
+ * @param {Uint8Array|null} [touchedV] 参与过折叠的顶点标记；null = 重算所有存活顶点
+ * @param {number[][]|null} [inputNormals] 原始输入法线快照（折叠前）；供方案B角度过滤
  */
-export function recomputeNormals(vertices, positions, tris, aliveV, aliveT) {
+export function recomputeNormals(vertices, positions, tris, aliveV, aliveT, touchedV = null, inputNormals = null) {
     const acc = vertices.map(() => [0, 0, 0]);
     const areaSum = new Float64Array(vertices.length);
+    const cosFilter = Math.cos((NORMAL_FILTER_DEG * Math.PI) / 180);
     for (let ti = 0; ti < tris.length; ti++) {
         if (!aliveT[ti]) continue;
         const [a, b, c] = tris[ti];
         if (!aliveV[a] || !aliveV[b] || !aliveV[c]) continue;
         // 叉积向量长度 = 2×面积，未除以 2 即等效面积加权（对累加方向无影响）
         const n = triNormal(positions[a], positions[b], positions[c]);
-        const area = 0.5 * Math.hypot(n[0], n[1], n[2]);
+        const nl = Math.hypot(n[0], n[1], n[2]);
+        const area = 0.5 * nl;
         for (const v of [a, b, c]) {
+            // fix8 方案B：touched 顶点只累计与该顶点原始法线夹角 ≤60° 的邻接面
+            // （跨层拼块面法线与该顶点原始法线夹角 90-150° → 被排除，分裂法线语义保留）
+            if (touchedV && inputNormals && touchedV[v] && nl > 1e-12) {
+                const on = inputNormals[v];
+                const ol = Math.hypot(on[0], on[1], on[2]);
+                if (ol > 1e-12) {
+                    const cos = (n[0] * on[0] + n[1] * on[1] + n[2] * on[2]) / (nl * ol);
+                    if (cos < cosFilter) continue;
+                }
+            }
             acc[v][0] += n[0];
             acc[v][1] += n[1];
             acc[v][2] += n[2];
@@ -984,11 +1010,18 @@ export function recomputeNormals(vertices, positions, tris, aliveV, aliveT) {
     }
     for (let i = 0; i < vertices.length; i++) {
         if (!aliveV[i]) continue;
+        if (touchedV && !touchedV[i]) {
+            // fix8：未参与折叠的顶点保留输入法线（PMX 输入法线是单位向量，接缝分裂法线语义保留）。
+            // 例外：输入法线退化（长度非 1，如 XiaoMei 的 1 个零法线顶点）→ 不保留，走下方面积平均
+            // 修复（旧全局重算行为，verify 的 normalsUnitLength 断言要求输出全单位法线）。
+            const inLen = Math.hypot(vertices[i].normal[0], vertices[i].normal[1], vertices[i].normal[2]);
+            if (Math.abs(inLen - 1) < 1e-3) continue;
+        }
         const s = acc[i];
         const len = Math.hypot(s[0], s[1], s[2]);
         if (areaSum[i] < 1e-12 || len < 1e-12) {
             // 无邻接存活三角形或面积和过小：保留原法线（归一化后）
-            const on = vertices[i].normal;
+            const on = (touchedV && inputNormals) ? inputNormals[i] : vertices[i].normal;
             const ol = Math.hypot(on[0], on[1], on[2]);
             vertices[i].normal = ol > 1e-12 ? [on[0] / ol, on[1] / ol, on[2] / ol] : [0, 0, 1];
         } else {
@@ -1069,6 +1102,12 @@ export function collapseMesh({
     // 工作副本：位置、邻接
     const positions = vertices.map((v) => v.position.slice());
     const aliveV = new Uint8Array(n).fill(1);
+    // fix8：参与过折叠的顶点标记。法线重算只作用于 touchedV 顶点，
+    // 未触碰（含锁定/接缝）顶点保留输入法线，避免全局重写破坏艺术家分裂法线。
+    const touchedV = new Uint8Array(n);
+    // fix8 方案B：原始输入法线快照（折叠循环会就地改 vertices[u].normal 为 lerp 值），
+    // 供 touched 顶点平均时排除与该原始法线夹角 >60° 的邻接面（保留分裂法线边缘语义）。
+    const inputNormals = vertices.map((v) => v.normal.slice());
     const tris = triangles.map((t) => t.slice());
     const aliveT = new Uint8Array(tris.length).fill(1);
 
@@ -1356,6 +1395,7 @@ export function collapseMesh({
             vertices[u].type = 2; // 合并后统一 BDEF4
         }
         positions[u] = pos;
+        touchedV[u] = 1; // fix8：u 参与折叠（位置被改写）→ 法线需要重算
         addQuadric(quadrics[u], quadrics[v]);
         quadrics[v].fill(0);
         aliveV[v] = 0;
@@ -1445,11 +1485,13 @@ export function collapseMesh({
     // 与折叠顺序解耦的兜底（顺序再变，最终输出也保证无洞）；只统计不阻断（verify/BDD 断言 0）。
     stats.newHoleEdges = countSpatiallyNewBoundaryEdges(inputPositions, inputTris, inputAlive, positions, tris, aliveT);
 
-    // 折叠循环结束后重算法线：所有存活顶点按邻接三角形面积加权平均并归一化。
-    // 插值法线只修长度不修方向，多次折叠后方向可能偏差；此处统一收敛方向，
-    // 只改 normal 不改位置。作用于所有存活顶点（含锁定顶点）：锁定顶点位置不变，
-    // 但法线可能被改写。
-    recomputeNormals(vertices, positions, tris, aliveV, aliveT);
+    // 折叠循环结束后重算法线（fix8）：只重算 touchedV 标记的顶点（参与过折叠、位置被改写），
+    // 其余存活顶点保留输入法线。全局重写会把锁定/接缝顶点法线改写为邻接面面积加权平均，
+    // 破坏艺术家为接缝校准的分裂法线（Tda 肩窝 33.6°→85.6°、108 翻转点根因）。
+    // touchedV 顶点照常取面平均（方案B：排除与该顶点原始法线夹角 >60° 的邻接面，保留分裂法线
+    // 边缘语义，防跨层拼块混入），合并顶点 lerp 漂移仍被修复；输入法线本身是单位向量，
+    // 未触碰顶点保留单位法线，verify 的 normalsUnitLength 断言不受影响。
+    recomputeNormals(vertices, positions, tris, aliveV, aliveT, touchedV, inputNormals);
 
     // 压缩输出：仅保留存活顶点；非锁定且不属任何存活三角形 → 丢弃（锁定顶点恒保留）
     const indexMap = new Int32Array(n).fill(-1);

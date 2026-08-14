@@ -32,6 +32,7 @@ import {
     collapseProtrudeMax,
     maxProtrudeOfVerts,
     buildEdgeTris,
+    collapseMesh,
 } from '../../src/tool/pmx-face-reduce/qem.mjs';
 
 let SLIVER_ASPECT_MAX = 20;
@@ -1089,6 +1090,87 @@ facts.originalMaterialFaceCounts = fixtureModel.materials.map((m) => m.faceCount
       [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 1, 0.5]],
       [[0, 1, 2], [0, 1, 3]]
     ).size === 0,
+  };
+}
+
+// ---------- fix8 法线 touchedV 单元测试（未触碰顶点保留输入法线） ----------
+// 5×5 平面网格（z=0，25 顶点 / 32 三角形），锁定边界环（r=0/r=4/c=0/c=4 共 16 顶点）。
+// 边界锁定点输入法线设为 [1,0,0]（≠ 平面邻接面面积加权平均 [0,0,1]）→ 若 recomputeNormals 无
+// touchedV 过滤（全局重写），锁定顶点法线被改写为 [0,0,1]（RED）；fix8 后保留 [1,0,0]（GREEN）。
+// 自由内部 3×3 网格折叠（targetTriangles=8 → 必有折叠发生），折叠（touched）顶点法线须仍为单位长度。
+// RED 能力：redCapable 断言输入法线 [1,0,0] 与邻面平均 [0,0,1] 正交 → 「保留」与「重写」结果可区分。
+{
+  const N = 5;
+  const idx = (c, r) => r * N + c;
+  const positions = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) positions.push([c, r, 0]);
+  const tris = [];
+  for (let r = 0; r < N - 1; r++) for (let c = 0; c < N - 1; c++) {
+    const a = idx(c, r), b = idx(c + 1, r), d = idx(c, r + 1), e = idx(c + 1, r + 1);
+    tris.push([a, b, e], [a, e, d]);
+  }
+  const locked = new Set();
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    if (r === 0 || r === N - 1 || c === 0 || c === N - 1) locked.add(idx(c, r));
+  }
+  const inputNormals = new Map();
+  const verts = positions.map((p, i) => {
+    const normal = locked.has(i) ? [1, 0, 0] : [0, 0, 1];
+    inputNormals.set(i, normal.slice());
+    return {
+      position: p.slice(),
+      normal,
+      uv: [0, 0],
+      auvs: [],
+      type: 0,
+      skinIndices: [0],
+      skinWeights: [1],
+      edgeRatio: 1,
+    };
+  });
+  const res = collapseMesh({
+    vertices: verts,
+    triangles: tris,
+    locked,
+    targetTriangles: 8,
+    minRetention: 0,
+    lockSmallMaterials: false,
+    triMaterials: null,
+  });
+  // 前置：输入法线均为单位长度
+  let allInputUnit = true;
+  for (const n of inputNormals.values()) {
+    const l = Math.hypot(n[0], n[1], n[2]);
+    if (Math.abs(l - 1) > 1e-6) allInputUnit = false;
+  }
+  // 锁定（未触碰）顶点：输出法线 === 输入法线（逐分量误差 < 1e-6）
+  let lockedPreserved = true;
+  let preservedCount = 0;
+  for (const [i, j] of res.indexMap.entries()) {
+    if (j < 0 || !locked.has(i)) continue;
+    const out = res.vertices[j].normal;
+    const inp = inputNormals.get(i);
+    const d = Math.max(Math.abs(out[0] - inp[0]), Math.abs(out[1] - inp[1]), Math.abs(out[2] - inp[2]));
+    if (d > 1e-6) lockedPreserved = false;
+    else preservedCount++;
+  }
+  // 全部输出顶点法线单位长度
+  let allUnit = true;
+  for (const v of res.vertices) {
+    const l = Math.hypot(v.normal[0], v.normal[1], v.normal[2]);
+    if (Math.abs(l - 1) > 1e-3) allUnit = false;
+  }
+  // RED 能力自检：锁定顶点输入法线 [1,0,0] 与平面邻面平均方向 [0,0,1] 正交
+  const faceAvgN = [0, 0, 1];
+  const dot = faceAvgN[0] * 1 + faceAvgN[1] * 0 + faceAvgN[2] * 0;
+  facts.unitTouchedNormals = {
+    collapses: res.stats.collapses,
+    lockedPreserved,
+    preservedCount,
+    lockedCount: locked.size,
+    allNormalsUnitLength: allUnit,
+    allInputUnitLength: allInputUnit,
+    redCapable: dot < 0.5,
   };
 }
 

@@ -251,6 +251,15 @@ interface Facts {
     outSame: number;
     outNew: number;
   };
+  unitTouchedNormals: {
+    collapses: number;
+    lockedPreserved: boolean;
+    preservedCount: number;
+    lockedCount: number;
+    allNormalsUnitLength: boolean;
+    allInputUnitLength: boolean;
+    redCapable: boolean;
+  };
   sphereExit: number;
   sphereStats: ReduceStats | null;
   sphereParseable: boolean;
@@ -881,6 +890,29 @@ defineFeature(feature, (test) => {
         });
         and(/^输出含远离输入突起的簇 B 时新增 ≥1（outNew≥1，内带尖刺形态必被抓）$/, () => {
             expect(facts.unitTipNewProtrude.outNew).toBeGreaterThanOrEqual(1);
+        });
+    });
+
+    test('未触碰顶点保留输入法线（touchedV 法线重写过滤）', ({ given, when, then, and }) => {
+        given(/^构造 5×5 平面网格（边界环锁定，输入法线 \[1,0,0\] 与邻面平均 \[0,0,1\] 正交）$/, () => {
+            facts = null;
+        });
+        when(/^直接调用 qem\.mjs 的 collapseMesh（targetTriangles=8）$/, () => {
+            facts = runHelper();
+        });
+        then(/^确实发生了折叠（stats\.collapses > 0，断言前提成立）$/, () => {
+            expect(facts.unitTouchedNormals.collapses).toBeGreaterThan(0);
+        });
+        and(/^输入法线均为单位长度（前置，redCapable 区分「保留\/重写」）$/, () => {
+            expect(facts.unitTouchedNormals.allInputUnitLength).toBe(true);
+            expect(facts.unitTouchedNormals.redCapable).toBe(true);
+        });
+        and(/^所有锁定（未触碰）顶点输出法线 === 输入法线（保留）$/, () => {
+            expect(facts.unitTouchedNormals.lockedPreserved).toBe(true);
+            expect(facts.unitTouchedNormals.preservedCount).toBe(facts.unitTouchedNormals.lockedCount);
+        });
+        and(/^全部输出顶点法线单位长度（折叠顶点重算后仍归一化）$/, () => {
+            expect(facts.unitTouchedNormals.allNormalsUnitLength).toBe(true);
         });
     });
 
