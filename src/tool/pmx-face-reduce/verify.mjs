@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { loadPmx } from '../lib/pmx-loader.mjs';
 import { buildLockedSet, VERTEX_MORPH_TYPES } from './lock-set.mjs';
-import { triArea, SMALL_MATERIAL_TRI, triEdgeStats, maxProtrudeOfVerts, buildEdgeTris, buildBoundaryEdgeGrid, pointSegDist2, HOLE_TOL } from './qem.mjs';
+import { triArea, SMALL_MATERIAL_TRI, triEdgeStats, maxProtrudeOfVerts, buildEdgeTris, buildBoundaryEdgeGrid, pointSegDist2, HOLE_TOL, countSpatiallyNewBoundaryEdges } from './qem.mjs';
 
 const POS_TOL = 1e-6;
 const MORPH_TOL = 1e-5;
@@ -15,15 +15,6 @@ const AREA_MIN = 1e-9;
 const MAX_REPORT_ERRORS = 30;
 // 受保护材质（--lock-materials）的最低保留率
 const PROTECTED_RETENTION_MIN = 0.9;
-// 质量检查项（第六轮 §4.1）：qualityChecksActive=false（无 BurumaSet 材质）→ 各质量项跳过且视为 ok
-const QUALITY_CHECKS = [
-    'burumaAreaP99Growth',
-    'burumaMaxLP90Growth',
-    'fingertipProtrudeShape',
-    'noNewOversizeTriangles',
-    'noNonManifoldEdges',
-    'noNewHoles',
-];
 // 指尖突起形态检查（fix7.1 重构）：全指尖区域「新增尖刺」检测，口径 = scripts/diag-finger-full.mjs。
 // fix7 的「外带 |x|>9 + 0.055 阈值」漏检内带尖刺（fix7.1 实测：修复后残留 13 个新增突起
 // = 外带 9 + 内带 4，内带 tri#15603 @[8.89,14.37,-0.73] 等 x≈±8.67~8.89、y≈14.2~14.5、z≈-0.8~-0.7
@@ -514,22 +505,74 @@ export function verifyFaces({
             checks.materialRetentionOk = materialRetentionOk;
         }
 
-        // 9. 视觉质量检查（第六轮 §4.1）：阈值全部运行时实测（输入 p99/p90/突起面积），断言里只有
-        // 增长系数（1.3/1.5）等比例常数，不硬编码被测值。qualityChecksActive=false（无 BurumaSet 材质）
-        // → 各质量项跳过且视为 ok（BDD 合成 fixture 无此材质 → 自动跳过，不影响既有场景）。
+        // 9. 视觉质量检查（第六轮 §4.1 + fix9 通用化）：阈值全部运行时实测（输入 p99/p90/突起面积），
+        // 断言里只有增长系数（1.5）等比例常数，不硬编码被测值。
+        // fix9 解耦：全局性检查（noNewOversizeTriangles / noNonManifoldEdges / noNewHoles）任何模型都
+        // 无条件执行，不依赖 BurumaSet。旧实现把全部质量断言绑定 BurumaSet，无此材质的模型
+        // （如 Tda）qualityChecksActive=false → 全部质量断言跳过 → 减面破面漏检（Tda 左大腿内侧
+        // 7 个新增跨曲面超尺寸三角形即此路径漏检的实锤）。
+        // qualityChecksActive 语义 =「存在 BurumaSet（材质相关检查激活）」；仅材质相关检查
+        // （burumaAreaP99Growth / burumaMaxLP90Growth / fingertipProtrudeShape）受它门控。
         const quality = { active: false };
         function checkQuality() {
             const bMat = materialFaceIndices(orig, 'BurumaSet');
+            const bMatOut = materialFaceIndices(dec, 'BurumaSet');
             checks.qualityChecksActive = bMat !== null;
-            if (bMat === null) {
-                for (const k of QUALITY_CHECKS) checks[k] = true;
-                return;
-            }
             quality.active = true;
+            quality.materialActive = bMat !== null;
             const origPos = orig.vertices.map((v) => v.position);
             const decPos = dec.vertices.map((v) => v.position);
             const origTri = orig.faces.map((f) => f.indices);
             const decTri = dec.faces.map((f) => f.indices);
+
+            // ===== 全局性质量检查（无条件执行，任何模型都断言） =====
+
+            // 全局新增超尺寸三角形：输出 maxL > 输入全局 maxL p99，质心无法匹配输入固有巨型三角形 → 新增。
+            // 只计「跨曲面合并」（新三角形所在输出表面曲率 > OVERSIZE_CURVED_DEG）——平坦区新大三角形视觉
+            // 无害（fix6 实测 56 个新超尺寸中仅 4 个 >12°、0 个 >20°，全在平坦区；fix5 有 444 个跨曲面合并）。
+            const inMaxLP99Global = percentile(origTri.map((t) => triGeomVerts(origPos, t).maxL), 0.99);
+            const { count: oversizeCount, curvedCount } = countNewOversize(origPos, origTri, decPos, decTri, inMaxLP99Global, OVERSIZE_CURVED_DEG);
+            quality.oversize = { inputMaxLP99: inMaxLP99Global, newCount: oversizeCount, curvedNewCount: curvedCount, matchTol: OVERSIZE_MATCH_TOL, curvMinDeg: OVERSIZE_CURVED_DEG };
+            checks.noNewOversizeTriangles = curvedCount === 0;
+
+            // 非流形边（输出边共享 >2）
+            const nonManifold = countNonManifoldEdges(decTri);
+            quality.nonManifoldEdges = nonManifold;
+            checks.noNonManifoldEdges = nonManifold === 0;
+
+            // 空间无新增洞：有 BurumaSet → 限定袜子区域（薄壳破面判定区，fix5/§1.4 点 5：全模型开放
+            // 边界合法回缩 0.2~1.0 不算洞，故断言范围限定袜子区域，fix6-plan §9：unmatchedBndCount ≤ 1）。
+            // 无 BurumaSet → 退化为全模型空间新洞检查（countSpatiallyNewBoundaryEdges）但保守跳过严格断言：
+            // fix5 教训「开放边界正常回缩不算洞」（XiaoMei 全模型 41、Tda 约 21 个回缩边界边均非洞），
+            // 全模型计数天然含合法回缩 → 严格断言会对真实模型误报，故仅报告计数供人工复查。
+            if (bMatOut) {
+                const sockNewHoles = countNewSockBoundaryEdges(origPos, origTri, decPos, decTri, bMatOut);
+                quality.sockNewHoles = sockNewHoles;
+                checks.noNewHoles = sockNewHoles <= 1;
+            } else if (bMat === null) {
+                const fullNewBnd = countSpatiallyNewBoundaryEdges(origPos, origTri, null, decPos, decTri, null);
+                quality.sockNewHoles = fullNewBnd;
+                quality.noNewHolesSkipped = 'no BurumaSet: full-model open-boundary retraction tolerated (fix5); count reported for manual review';
+                checks.noNewHoles = true;
+            } else {
+                // bMat 存在但输出丢失全部 BurumaSet 三角形：旧语义 sockNewHoles=1（严格）
+                quality.sockNewHoles = 1;
+                checks.noNewHoles = true;
+            }
+
+            // ===== 材质相关检查（仅 BurumaSet 存在时激活，受 qualityChecksActive 门控） =====
+            if (bMat === null) {
+                // 无 BurumaSet：材质相关检查跳过并告警。fingertip 区域 |x|>7, 13<y<16 是 XiaoMei
+                // 坐标系（fix7.1），Tda 手在 y≈9-13 不适用该区域——不因无 BurumaSet 全跳，但也不能用
+                // XiaoMei 指尖区域断言 Tda 手部形态 → 无 BurumaSet 时跳过并告警（Tda 手部由全局
+                // noNewOversizeTriangles / 突起守卫覆盖）。全局性检查已在上方照常执行。
+                checks.burumaAreaP99Growth = true;
+                checks.burumaMaxLP90Growth = true;
+                checks.fingertipProtrudeShape = true;
+                quality.skipped = ['burumaAreaP99Growth', 'burumaMaxLP90Growth', 'fingertipProtrudeShape'];
+                quality.skipReason = 'no BurumaSet material (Tda-class model): material-specific checks inactive; global checks (noNewOversizeTriangles/noNonManifoldEdges) still asserted';
+                return;
+            }
 
             // BurumaSet 面积/边长分位数（输入 vs 输出，运行时实测）
             const inAreas = [], inMaxLs = [], outAreas = [], outMaxLs = [];
@@ -537,7 +580,6 @@ export function verifyFaces({
                 const g = triGeom(orig.vertices, orig.faces[fi]);
                 inAreas.push(g.area); inMaxLs.push(g.maxL);
             }
-            const bMatOut = materialFaceIndices(dec, 'BurumaSet');
             if (bMatOut) {
                 for (const fi of bMatOut) {
                     const g = triGeom(dec.vertices, dec.faces[fi]);
@@ -563,26 +605,6 @@ export function verifyFaces({
             const outTipNew = countNewFingertipProtrusions(decPos, decTri, origPos, origTri);
             quality.fingertip = { inCount: inTipNew.count, outCount: outTipNew.count, inMaxArea: inTipNew.maxArea, outMaxArea: outTipNew.maxArea, refCount: inTipNew.refCount, queryThreshold: FINGERTIP_QUERY_PROTRUDE, refThreshold: FINGERTIP_REF_PROTRUDE, newDist: FINGERTIP_NEW_DIST, region: 'full |x|>7, 13<y<16' };
             checks.fingertipProtrudeShape = outTipNew.count <= inTipNew.count && outTipNew.maxArea <= inTipNew.maxArea;
-
-            // 全局新增超尺寸三角形：输出 maxL > 输入全局 maxL p99，质心无法匹配输入固有巨型三角形 → 新增。
-            // 只计「跨曲面合并」（新三角形所在输出表面曲率 > OVERSIZE_CURVED_DEG）——平坦区新大三角形视觉
-            // 无害（fix6 实测 56 个新超尺寸中仅 4 个 >12°、0 个 >20°，全在平坦区；fix5 有 444 个跨曲面合并）。
-            const inMaxLP99Global = percentile(origTri.map((t) => triGeomVerts(origPos, t).maxL), 0.99);
-            const { count: oversizeCount, curvedCount } = countNewOversize(origPos, origTri, decPos, decTri, inMaxLP99Global, OVERSIZE_CURVED_DEG);
-            quality.oversize = { inputMaxLP99: inMaxLP99Global, newCount: oversizeCount, curvedNewCount: curvedCount, matchTol: OVERSIZE_MATCH_TOL, curvMinDeg: OVERSIZE_CURVED_DEG };
-            checks.noNewOversizeTriangles = curvedCount === 0;
-
-            // 非流形边（输出边共享 >2）
-            const nonManifold = countNonManifoldEdges(decTri);
-            quality.nonManifoldEdges = nonManifold;
-            checks.noNonManifoldEdges = nonManifold === 0;
-
-            // 空间无新增洞：限定袜子区域（全模型开放边界合法回缩，fix5 实测 41 属非洞，见 helper 注释）
-            const sockNewHoles = bMatOut
-                ? countNewSockBoundaryEdges(origPos, origTri, decPos, decTri, bMatOut)
-                : 1;
-            quality.sockNewHoles = sockNewHoles;
-            checks.noNewHoles = sockNewHoles <= 1;
         }
 
         // ---------- 编排 ----------

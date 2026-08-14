@@ -865,6 +865,12 @@ export function computeVertexSizeStats(positions, tris, opts = {}) {
  * 根因：QEM quadric 误差是平面拟合误差，对「跨曲率合并」失明——球面相邻小三角几乎共面（误差≈0
  * 免费折叠），但大平面跨过球面弧段后矢高随跨度²增长 → 袜子/内裤屁股「破面」。突起守卫只测顶点
  * 戳出邻面的距离，不测三角形本身多大（跨度/胖度）→ 本守卫补上「尺寸 vs 局部曲率」这条轴。
+ * fix9 新增 globalMaxLP99 上限（输入全局 maxL p99）：曲率门控激活时再叠加「新三角 maxL 不得超过
+ * 输入全局 p99」。动机（Tda 礼服实测）：高曲率区局部输入本身含大三角形（Tda 大腿/裙摆局部 maxL
+ * p95 达 1.5~2.7，p99 附近即 1.61），2.0× 局部预算上限 ≈3.0 远高于模型全局 p99 → 折叠出的
+ * 1.6~2.2 级跨曲面合并三角被放行（verify noNewOversizeTriangles 判红 7 个，左大腿内侧 4 个 +
+ * 裙摆底部 3 个）。叠加全局上限后此类三角在折叠时即被拦截。平坦区（曲率门控未激活）不受影响；
+ * 默认 Infinity = 旧行为（BDD 单元测试直接调用不传该参数时兼容）。
  * @param {Float64Array} [sizeL] 每顶点局部输入 maxL 预算
  * @param {Float64Array} [sizeA] 每顶点局部输入面积预算
  * @param {Float64Array} [curv] 每顶点局部曲率（度）
@@ -873,13 +879,15 @@ export function computeVertexSizeStats(positions, tris, opts = {}) {
  * @param {number} [coefA] 面积系数（默认 AREA_COEF）
  * @param {number} [floorL] maxL 全局下限（默认 0）
  * @param {number} [floorA] 面积全局下限（默认 0）
+ * @param {number} [globalMaxLP99] 输入全局 maxL p99（曲率区上限；默认 Infinity = 不启用）
  * @returns {boolean} true=存在超尺寸三角形（应拒绝）
  */
 export function collapseCreatesOversizeTriangle(
     positions, tris, aliveT, vTris, u, v, newPos,
     sizeL = null, sizeA = null, curv = null,
     curvMinDeg = CURV_MIN_DEG, coefL = MAXL_COEF, coefA = AREA_COEF,
-    floorL = 0, floorA = 0
+    floorL = 0, floorA = 0,
+    globalMaxLP99 = Infinity
 ) {
     for (const { postIdx, postVerts } of affectedPostTris(positions, tris, aliveT, vTris, u, v, newPos)) {
         let c = 0;
@@ -891,7 +899,11 @@ export function collapseCreatesOversizeTriangle(
             if (sizeA && Number.isFinite(sizeA[idx]) && sizeA[idx] < ba) ba = sizeA[idx];
         }
         const s = triEdgeStats(postVerts[0], postVerts[1], postVerts[2]);
-        if (s.maxL > Math.max(floorL, coefL * bl)) return true;
+        // fix9：曲率区叠加「输入全局 maxL p99」上限（min，取更严）——高曲率礼服局部预算过宽时
+        // 收紧到模型全局分布（见函数头注释）。localLimit 与全局上限取小，平坦区不受 globalMaxLP99 影响。
+        const localLimit = Math.max(floorL, coefL * bl);
+        const limit = Number.isFinite(globalMaxLP99) ? Math.min(localLimit, globalMaxLP99) : localLimit;
+        if (s.maxL > limit) return true;
         const area = triArea(postVerts[0], postVerts[1], postVerts[2]);
         if (area > Math.max(floorA, coefA * ba)) return true;
     }
@@ -1206,6 +1218,21 @@ export function collapseMesh({
     const floorL = MAXL_FLOOR_RATIO * medE;
     const floorA = AREA_FLOOR_RATIO * medE * medE;
 
+    // fix9：输入全局 maxL p99（有效输入快照）——曲率感知尺寸守卫的全局上限（见该守卫头注释）。
+    // Tda 高曲率礼服局部输入预算过宽（大腿局部 p95 ≈1.5-2.7），2.0× 局部预算放行 1.6~2.2 级
+    // 跨曲面合并三角（verify noNewOversizeTriangles 判红 7 个）；叠加「全局 p99」上限后折叠时即拦截。
+    // 与 verify 口径一致（verify 用「输出 maxL > 输入全局 p99」判超尺寸），保证守卫在源头就封住。
+    const inputMaxLs = [];
+    for (let ti = 0; ti < tris.length; ti++) {
+        if (!inputAlive[ti]) continue;
+        const t = tris[ti];
+        inputMaxLs.push(triEdgeStats(positions[t[0]], positions[t[1]], positions[t[2]]).maxL);
+    }
+    inputMaxLs.sort((a, b) => a - b);
+    const globalMaxLP99 = inputMaxLs.length
+        ? inputMaxLs[Math.min(inputMaxLs.length - 1, Math.floor((inputMaxLs.length - 1) * 0.99))]
+        : Infinity;
+
     // 顶点→三角形邻接
     const vTris = new Array(n);
     for (let i = 0; i < n; i++) vTris[i] = [];
@@ -1343,7 +1370,7 @@ export function collapseMesh({
         // 成跨曲面大平面 → 袜子/内裤屁股破面）；突起守卫只测顶点戳出邻面距离，不测三角形本身多大 →
         // 本守卫补上「尺寸 vs 局部曲率」这条轴。
         if (collapseCreatesOversizeTriangle(positions, tris, aliveT, vTris, u, v, pos,
-                sizeL, sizeA, curv, CURV_MIN_DEG, MAXL_COEF, AREA_COEF, floorL, floorA)) {
+                sizeL, sizeA, curv, CURV_MIN_DEG, MAXL_COEF, AREA_COEF, floorL, floorA, globalMaxLP99)) {
             e.dead = true; stats.rejected++; stats.sizeRejects++; return;
         }
 

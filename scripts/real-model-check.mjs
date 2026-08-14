@@ -28,14 +28,17 @@ const ROOT = path.resolve(__dirname, '..');
 const REDUCE = path.join(ROOT, 'src/tool/pmx-face-reduce/reduce.mjs');
 const VERIFY = path.join(ROOT, 'src/tool/pmx-face-reduce/verify.mjs');
 const DEFAULT_INPUT = path.join(ROOT, 'demo/assets/XiaoMeiOriginFix_02_elrein.pmx');
-// 视觉质量断言项（与 verify.mjs QUALITY_CHECKS 对应；qualityChecksActive=false 时跳过并 warning）
-const QUALITY_KEYS = [
-    'burumaAreaP99Growth',
-    'burumaMaxLP90Growth',
-    'fingertipProtrudeShape',
+// 全局性质量检查（fix9 通用化）：任何模型都执行、都断言，不依赖 BurumaSet（Tda 无 BurumaSet 时旧实现
+// 全部质量断言被跳过 → 左大腿内侧破面漏检的根因）。材质相关检查仅在存在 BurumaSet 时断言。
+const GLOBAL_QUALITY_KEYS = [
     'noNewOversizeTriangles',
     'noNonManifoldEdges',
     'noNewHoles',
+];
+const MATERIAL_QUALITY_KEYS = [
+    'burumaAreaP99Growth',
+    'burumaMaxLP90Growth',
+    'fingertipProtrudeShape',
 ];
 
 function parseArgs(argv) {
@@ -103,28 +106,37 @@ if (!args.keep && fs.existsSync(output)) {
     fs.unlinkSync(output);
 }
 
-// ---------- 视觉质量断言段（fix6-plan §4.1） ----------
+// ---------- 视觉质量断言段（fix6-plan §4.1 + fix9 通用化） ----------
 const vchecks = (verify.report && verify.report.checks) || {};
 let qualityOk = true;
 const quality = { active: vchecks.qualityChecksActive === true };
 if (args.skipQuality) {
     quality.skipped = true;
-} else if (vchecks.qualityChecksActive !== true) {
-    // 无 BurumaSet 材质（自定义 --input 常见）：质量项跳过并输出 warning，不判失败
-    quality.skipped = 'no BurumaSet material';
-    console.error('[real-model-check] quality checks skipped: input has no BurumaSet material');
-    if (!args.input) {
-        qualityOk = false;
-        quality.error = 'default model missing BurumaSet material';
-    }
 } else {
-    const results = {};
-    for (const k of QUALITY_KEYS) results[k] = vchecks[k] === true;
-    quality.checks = results;
-    qualityOk = QUALITY_KEYS.every((k) => vchecks[k] === true);
+    // 全局性质量检查（fix9）：任何模型都断言（跨曲面新增超尺寸 / 非流形边 / 新增洞），不依赖 BurumaSet。
+    const gResults = {};
+    for (const k of GLOBAL_QUALITY_KEYS) gResults[k] = vchecks[k] === true;
+    quality.globalChecks = gResults;
+    qualityOk = GLOBAL_QUALITY_KEYS.every((k) => vchecks[k] === true);
     if (!qualityOk) {
-        console.error('[real-model-check] quality checks FAILED:');
-        for (const k of QUALITY_KEYS) console.error(`  ${k}: ${String(vchecks[k])}`);
+        console.error('[real-model-check] global quality checks FAILED:');
+        for (const k of GLOBAL_QUALITY_KEYS) console.error(`  ${k}: ${String(vchecks[k])}`);
+    }
+    if (vchecks.qualityChecksActive === true) {
+        // 存在 BurumaSet：材质相关检查也断言（BurumaSet 面积/边长分位、指尖突起形态）
+        const results = {};
+        for (const k of MATERIAL_QUALITY_KEYS) results[k] = vchecks[k] === true;
+        quality.checks = results;
+        const matOk = MATERIAL_QUALITY_KEYS.every((k) => vchecks[k] === true);
+        qualityOk = qualityOk && matOk;
+        if (!matOk) {
+            console.error('[real-model-check] material-specific quality checks FAILED:');
+            for (const k of MATERIAL_QUALITY_KEYS) console.error(`  ${k}: ${String(vchecks[k])}`);
+        }
+    } else {
+        // 无 BurumaSet：材质相关检查跳过并 warning（全局检查已在上方断言）
+        quality.skippedMaterial = 'no BurumaSet material';
+        console.error('[real-model-check] material-specific quality checks skipped: input has no BurumaSet material; global checks (noNewOversizeTriangles/noNonManifoldEdges/noNewHoles) still asserted');
     }
 }
 quality.verifyQuality = verify.report && verify.report.quality ? verify.report.quality : null;

@@ -71,12 +71,27 @@ interface VerifyChecks {
   headerConsistent: boolean;
   protectedRetention?: boolean;
   materialRetentionOk: boolean;
+  // 视觉质量断言（fix9 通用化后任何模型都执行全局检查；材质相关检查受 qualityChecksActive 门控）
+  qualityChecksActive?: boolean;
+  noNewOversizeTriangles?: boolean;
+  noNonManifoldEdges?: boolean;
+  noNewHoles?: boolean;
+  burumaAreaP99Growth?: boolean;
+  burumaMaxLP90Growth?: boolean;
+  fingertipProtrudeShape?: boolean;
 }
 interface VerifyReport {
   ok: boolean;
   checks: VerifyChecks;
   errorCount: number;
   errors: string[];
+  quality?: {
+    active: boolean;
+    materialActive?: boolean;
+    oversize?: { inputMaxLP99: number; newCount: number; curvedNewCount: number };
+    nonManifoldEdges?: number;
+    sockNewHoles?: number;
+  };
   stats: VerifyStats | null;
   perMaterial: PerMaterialStat[];
 }
@@ -934,6 +949,33 @@ defineFeature(feature, (test) => {
             expect(facts.sphereOutTri).toBeGreaterThan(0);
             expect(facts.sphereStats).toBeTruthy();
             expect(facts.sphereStats!.newTriangles).toBeLessThan(facts.sphereInputTri);
+        });
+    });
+
+    test('无 BurumaSet 材质模型仍执行全局质量检查', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形，无 BurumaSet 材质）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（target-ratio 0\.5）$/, () => {
+            facts = runHelper();
+        });
+        then(/^verify 输出 qualityChecksActive 为 false（无 BurumaSet → 材质相关检查跳过）$/, () => {
+            expect(facts.verify05).toBeTruthy();
+            expect(facts.verify05.ok).toBe(true);
+            expect(facts.verify05.checks.qualityChecksActive).toBe(false);
+        });
+        and(/^verify 输出 quality\.active 为 true（全局质量检查已执行）$/, () => {
+            expect(facts.verify05.quality).toBeTruthy();
+            expect(facts.verify05.quality!.active).toBe(true);
+        });
+        and(/^verify 输出 noNewOversizeTriangles 为 true（跨曲面新增超尺寸全局断言仍跑）$/, () => {
+            expect(facts.verify05.checks.noNewOversizeTriangles).toBe(true);
+        });
+        and(/^verify 输出 noNonManifoldEdges 为 true（非流形边全局断言仍跑）$/, () => {
+            expect(facts.verify05.checks.noNonManifoldEdges).toBe(true);
+        });
+        and(/^verify 输出 noNewHoles 为 true（新增洞全局断言仍跑）$/, () => {
+            expect(facts.verify05.checks.noNewHoles).toBe(true);
         });
     });
 });

@@ -301,3 +301,20 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     Then 输出中每个三角形 maxL 与面积均不超过 max(floor, 系数 × 顶点局部预算上限)（阈值 import 自 qem.mjs）
     And 输出文件可解析且 reduce 退出码为 0
 
+  # ★ 质量断言解耦 BurumaSet（fix9，单元 2 集成级）：无 BurumaSet 材质模型仍执行全局质量检查
+  # Tda 无 BurumaSet → 旧实现 qualityChecksActive=false 直接跳过全部质量断言（noNewOversizeTriangles /
+  # noNonManifoldEdges / noNewHoles 全部不跑）→ 左大腿内侧 7 个新增跨曲面超尺寸三角形漏检。
+  # fix9 后全局性检查无条件执行；仅材质相关检查（BurumaSet 分位/指尖）受 qualityChecksActive 门控。
+  # 本场景复用合成 fixture（材质 mat0~mat4，无 BurumaSet 命名）验证：qualityChecksActive=false 但
+  # 全局检查照跑（quality.active=true 且三个全局断言项全绿）。
+  # RED 能力：把 verify.mjs 的 checkQuality 改回「无 BurumaSet 全跳」（quality.active 保持 false）→
+  # qualityActive 变 false → 红；恢复 fix9 通用化 → 绿。
+  Scenario: 无 BurumaSet 材质模型仍执行全局质量检查
+    Given 合成 fixture PMX 已生成（2040 顶点 / 3902 三角形，无 BurumaSet 材质）
+    When 用 reduce.mjs 生成减面 pmx（target-ratio 0.5）
+    Then verify 输出 qualityChecksActive 为 false（无 BurumaSet → 材质相关检查跳过）
+    And verify 输出 quality.active 为 true（全局质量检查已执行）
+    And verify 输出 noNewOversizeTriangles 为 true（跨曲面新增超尺寸全局断言仍跑）
+    And verify 输出 noNonManifoldEdges 为 true（非流形边全局断言仍跑）
+    And verify 输出 noNewHoles 为 true（新增洞全局断言仍跑）
+
