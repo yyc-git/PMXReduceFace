@@ -67,6 +67,15 @@ Feature: pmx-face-reduce — PMX 减面（QEM 约束边折叠）
     Then 输出三角形数不超过 1600
     And 验证脚本 --target-tri 1600 全绿
 
+  # Phase fix-r4：5 万面阈值 —— TDA 式宴 夏卉（35,282 面 < 50,000）不得被 QEM 硬削
+  Scenario: 5 万面以下模型跳过 QEM 直接透传输入
+    Given 合成 fixture PMX 已生成（2040 顶点 / 3902 三角形）
+    When 用 reduce.mjs 生成减面 pmx（--target-tri 50000）
+    Then reduce 退出码为 0 且 stats.skipped 为 true
+    And stats 报告 newTriangles === originalTriangles，reductionRatio 0，reductionMet true
+    And 输出文件与输入字节级一致且可被 parsePmx 重新解析
+    And 不带任何目标时默认目标为 50000 且同样跳过（字节级一致）
+
   # 自动材质保护（pmx-face-reduce 带材质白块修复）：不带 --lock-materials，仅 --min-retention 0.3
   # 保底 = 小材质 100%（300+200=500）+ 大材质下限（floor(1400×0.3)+floor(1202×0.3)+floor(800×0.3)=420+360+240=1020）= 1520
   Scenario: 自动材质保护下小材质全保留且大材质保留率达标

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // reduce.mjs — PMX 减面主入口（QEM 约束边折叠）
-// 用法：node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"]
+// 用法：node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"]
+// 默认目标：未给 --target-tri / --target-ratio 时按 5 万面（targetTriangles 默认 50000），≤5 万面模型直接跳过 QEM 透传输入
 // 输出：stdout 打印统计 JSON
 
 import fs from 'fs';
@@ -18,7 +19,7 @@ function parseArgs(argv) {
         if (a === '--input') args.input = argv[++i];
         else if (a === '--output') args.output = argv[++i];
         else if (a === '--target-ratio') args.targetRatio = parseFloat(argv[++i]);
-        else if (a === '--target-tri') args.targetTriangles = parseInt(String(argv[++i]).replace(/,/g, ''), 10);
+        else if (a === '--target-tri') { args.targetTriangles = parseInt(String(argv[++i]).replace(/,/g, ''), 10); args.targetTriGiven = true; }
         else if (a === '--lock-morph') { args.lockMorph = argv[++i] !== 'false'; args.lockMorphSet = true; }
         else if (a === '--lock-seams') args.lockSeams = argv[++i] !== 'false';
         else if (a === '--lock-materials') {
@@ -31,13 +32,16 @@ function parseArgs(argv) {
         else if (a === '--min-retention') args.minRetention = parseFloat(argv[++i]);
         else if (a === '--lock-small-materials') args.lockSmallMaterials = argv[++i] !== 'false';
     }
+    // 只给了 --target-ratio（未给 --target-tri）→ 比例模式：显式置 targetTriangles=null，
+    // 避免 reduceFaces 的默认目标 50000 覆盖比例目标。
+    if (args.targetTriGiven !== true && args.targetRatio !== undefined) args.targetTriangles = null;
     // 必填项 + 数值项校验（非法即明确报错退出，避免静默 NaN 减面）
     if (!args.input || !args.output) {
         console.error('usage: node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"] [--min-retention 0.3] [--lock-small-materials true|false]');
         process.exit(1);
     }
     for (const [name, val] of [['--target-ratio', args.targetRatio], ['--target-tri', args.targetTriangles], ['--min-retention', args.minRetention]]) {
-        if (val !== undefined && !Number.isFinite(val)) {
+        if (val !== undefined && val !== null && !Number.isFinite(val)) {
             console.error(`invalid numeric value for ${name}: ${String(val)}`);
             process.exit(1);
         }
@@ -49,7 +53,7 @@ export function reduceFaces({
     input,
     output,
     targetRatio = 0.5,
-    targetTriangles = null,
+    targetTriangles = 50000,
     lockMorph = true,
     lockSeams = true,
     lockMaterials = null,
@@ -62,7 +66,8 @@ export function reduceFaces({
     // 三角化（mmdparser faces 已全三角形；防御性拆 quad）
     const triangles = triangulateFaces(model.faces);
     const totalTri = triangles.length;
-    // --target-tri 与 --target-ratio 并存时，--target-tri 优先
+    // --target-tri 与 --target-ratio 并存时，--target-tri 优先；
+    // 两者都未给出（默认）→ 目标 = 50000（≤5 万面模型直接跳过，不再被 0.5 比例硬削）
     const targetTri = targetTriangles != null ? targetTriangles : Math.ceil(totalTri * targetRatio);
 
     // 锁定顶点集（morph 引用 + 空间重合接缝 + 材质级锁定）
@@ -73,6 +78,52 @@ export function reduceFaces({
         faces: model.faces,
         materials: model.materials,
     });
+
+    // 受保护材质列表（材质级锁定）：index + origTri，便于验证保留率
+    const protectedMaterials = lockMaterials && lockMaterials.length
+        ? lockMaterials.map((mi) => ({
+              index: mi,
+              origTri: model.materials[mi] ? model.materials[mi].faceCount : 0,
+          }))
+        : [];
+
+    // 目标已达成（totalTri ≤ targetTri，含默认 50000）：跳过 QEM，直接透传输入文件（字节级一致），
+    // stats 如实标记 skipped/lockedCount；不调 collapseMesh，不影响 qem.mjs 质量 reject 逻辑。
+    if (totalTri <= targetTri) {
+        fs.copyFileSync(input, output);
+        return {
+            input,
+            output,
+            originalVertices: model.metadata.vertexCount,
+            newVertices: model.metadata.vertexCount,
+            originalTriangles: totalTri,
+            newTriangles: totalTri,
+            targetTriangles: targetTri,
+            lockedCount: locked.size,
+            lockMaterials: lockMaterials || [],
+            protectedMaterials,
+            minRetention,
+            lockSmallMaterials,
+            materialProtection: [],
+            patchedHoles: 0,
+            patchedTriangles: 0,
+            reductionRatio: 0,
+            reductionMet: true,
+            collapses: 0,
+            rejected: 0,
+            shapeRejects: 0,
+            linkRejects: 0,
+            holeRejects: 0,
+            foldOverRejects: 0,
+            protrudeRejects: 0,
+            sizeRejects: 0,
+            materialRejects: 0,
+            newHoleEdges: 0,
+            skipped: true,
+            durationMs: Date.now() - t0,
+            perMaterial: model.materials.map((m, i) => ({ index: i, name: m.name, origTri: m.faceCount, newTri: m.faceCount })),
+        };
+    }
 
     // 材质→三角形归属：按材质 faceCount 累计偏移生成每三角形材质索引（与 triangles 平行）。
     // 供 collapseMesh 做小材质全锁 + min-retention 动态保护。
@@ -157,13 +208,6 @@ export function reduceFaces({
     fs.writeFileSync(output, out);
 
     const reduction = (1 - finalTriangles.length / totalTri) * 100;
-    // 受保护材质列表（材质级锁定）：index + origTri，便于验证保留率
-    const protectedMaterials = lockMaterials && lockMaterials.length
-        ? lockMaterials.map((mi) => ({
-              index: mi,
-              origTri: model.materials[mi] ? model.materials[mi].faceCount : 0,
-          }))
-        : [];
     const result = {
         input,
         output,

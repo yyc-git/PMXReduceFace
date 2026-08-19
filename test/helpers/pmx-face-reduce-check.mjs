@@ -1273,6 +1273,29 @@ function parseOutput(p) {
   facts.verifyTri = v.report;
 }
 
+// 5 万面跳过（Phase fix-r4）：--target-tri 50000 → 总面 3902 ≤ 50000 → 跳过 QEM，直接透传输入
+{
+  const out = outPath('skip50k');
+  const r = runReduce(['--input', inputPath, '--output', out, '--target-tri', '50000']);
+  facts.reduceSkipExit = r.exit;
+  facts.reduceSkipStats = r.stats;
+  facts.reduceSkipByteIdentical = fs.existsSync(out) && fs.readFileSync(out).equals(fixtureBuf);
+  const m = parseOutput(out);
+  facts.skipParseable = !!(m && !m.parseError);
+  facts.skipTriCount = m && !m.parseError ? m.faces.length : -1;
+  facts.skipVertexCount = m && !m.parseError ? m.metadata.vertexCount : -1;
+  facts.skipFirstMaterialFaceCount = m && !m.parseError ? m.materials[0].faceCount : -1;
+}
+
+// 默认跳过（Phase fix-r4）：不带 --target-tri / --target-ratio → 默认目标 50000 → ≤5 万面模型透传
+{
+  const out = outPath('skipDefault');
+  const r = runReduce(['--input', inputPath, '--output', out]);
+  facts.reduceDefaultExit = r.exit;
+  facts.reduceDefaultStats = r.stats;
+  facts.reduceDefaultByteIdentical = fs.existsSync(out) && fs.readFileSync(out).equals(fixtureBuf);
+}
+
 // 自动材质保护（场景 10）：
 //   run A：--min-retention 0.3 --target-tri 1600（可达，校验材质保留率）
 //   run B：--min-retention 0.3 --target-tri 1000（< 保底 1520，触发 retention 阻断）

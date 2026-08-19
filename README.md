@@ -112,15 +112,15 @@ import { buildLockedSet } from 'pmx-reduce-face/src/tool/pmx-face-reduce/lock-se
 |------|------|------|
 | `input` | 必填 | 输入 PMX 路径 |
 | `output` | 必填 | 输出 PMX 路径 |
-| `targetRatio` | `0.5` | 比例目标 |
-| `targetTriangles` | `null` | 绝对目标（优先） |
+| `targetRatio` | `0.5` | 比例目标（显式给定 `--target-ratio` 时生效） |
+| `targetTriangles` | `50000` | 绝对目标（优先；默认 5 万，**≤5 万面模型直接跳过 QEM、透传输入**） |
 | `lockMorph` | `true` | morph 顶点锁定 |
 | `lockSeams` | `true` | 接缝顶点锁定 |
 | `lockMaterials` | `null` | 材质索引数组 |
 | `minRetention` | `0.3` | 大材质保底比例 |
 | `lockSmallMaterials` | `true` | 小材质全锁 |
 
-返回：`{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs }`。
+返回：`{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs, skipped }`。`skipped: true` 表示总面数 ≤ 目标（≤5 万默认）未进入 QEM，输出与输入字节级一致。
 
 **`verifyFaces(options)`** — 减面结果全量断言（等价于 verify CLI）
 
@@ -400,15 +400,15 @@ import { buildLockedSet } from 'pmx-reduce-face/src/tool/pmx-face-reduce/lock-se
 |-------|---------|-------------|
 | `input` | required | input PMX path |
 | `output` | required | output PMX path |
-| `targetRatio` | `0.5` | ratio target |
-| `targetTriangles` | `null` | absolute target (takes precedence) |
+| `targetRatio` | `0.5` | ratio target (used when `--target-ratio` is given) |
+| `targetTriangles` | `50000` | absolute target (takes precedence; default 50k — models ≤ 50k triangles **skip QEM and pass through** identical bytes) |
 | `lockMorph` | `true` | lock morph vertices |
 | `lockSeams` | `true` | lock seam vertices |
 | `lockMaterials` | `null` | material index array |
 | `minRetention` | `0.3` | large-material floor ratio |
 | `lockSmallMaterials` | `true` | lock small materials fully |
 
-Returns: `{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs }`.
+Returns: `{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs, skipped }`. `skipped: true` means totalTri ≤ target (default 50k): QEM was not run and the output is byte-identical to the input.
 
 **`verifyFaces(options)`** — full assertions on a reduced result (equivalent to the verify CLI)
 

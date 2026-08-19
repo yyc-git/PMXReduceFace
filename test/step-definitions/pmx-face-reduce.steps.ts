@@ -292,6 +292,16 @@ interface Facts {
   sphereOutTri: number;
   sphereOutMaxOver: { maxL: number; area: number };
   sphereOutWithinSize: boolean;
+  reduceSkipExit: number;
+  reduceSkipStats: ReduceStats & { skipped?: boolean };
+  reduceSkipByteIdentical: boolean;
+  skipParseable: boolean;
+  skipTriCount: number;
+  skipVertexCount: number;
+  skipFirstMaterialFaceCount: number;
+  reduceDefaultExit: number;
+  reduceDefaultStats: ReduceStats & { skipped?: boolean };
+  reduceDefaultByteIdentical: boolean;
 }
 
 function runHelper(): Facts {
@@ -468,6 +478,44 @@ defineFeature(feature, (test) => {
             expect(facts.verifyTriExit).toBe(0);
             expect(facts.verifyTri.ok).toBe(true);
             expect(facts.verifyTri.stats.targetTriangles).toBe(1600);
+        });
+    });
+
+    test('5 万面以下模型跳过 QEM 直接透传输入', ({ given, when, then, and }) => {
+        given(/^合成 fixture PMX 已生成（2040 顶点 \/ 3902 三角形）$/, () => {
+            facts = null;
+        });
+        when(/^用 reduce\.mjs 生成减面 pmx（--target-tri 50000）$/, () => {
+            facts = runHelper();
+        });
+        then(/^reduce 退出码为 0 且 stats\.skipped 为 true$/, () => {
+            expect(facts.reduceSkipExit).toBe(0);
+            expect(facts.reduceSkipStats).toBeTruthy();
+            expect(facts.reduceSkipStats.skipped).toBe(true);
+        });
+        and(/^stats 报告 newTriangles === originalTriangles，reductionRatio 0，reductionMet true$/, () => {
+            expect(facts.reduceSkipStats.newTriangles).toBe(facts.originalTriangles);
+            expect(facts.reduceSkipStats.originalTriangles).toBe(facts.originalTriangles);
+            expect(facts.reduceSkipStats.newVertices).toBe(facts.originalVertices);
+            expect(facts.reduceSkipStats.reductionRatio).toBe(0);
+            expect(facts.reduceSkipStats.reductionMet).toBe(true);
+            expect(facts.reduceSkipStats.targetTriangles).toBe(50000);
+            expect(facts.reduceSkipStats.collapses).toBe(0);
+        });
+        and(/^输出文件与输入字节级一致且可被 parsePmx 重新解析$/, () => {
+            expect(facts.reduceSkipByteIdentical).toBe(true);
+            expect(facts.skipParseable).toBe(true);
+            expect(facts.skipTriCount).toBe(facts.originalTriangles);
+            expect(facts.skipVertexCount).toBe(facts.originalVertices);
+            expect(facts.skipFirstMaterialFaceCount).toBe(facts.originalMaterialFaceCounts[0]);
+        });
+        and(/^不带任何目标时默认目标为 50000 且同样跳过（字节级一致）$/, () => {
+            expect(facts.reduceDefaultExit).toBe(0);
+            expect(facts.reduceDefaultStats).toBeTruthy();
+            expect(facts.reduceDefaultStats.skipped).toBe(true);
+            expect(facts.reduceDefaultStats.targetTriangles).toBe(50000);
+            expect(facts.reduceDefaultStats.newTriangles).toBe(facts.originalTriangles);
+            expect(facts.reduceDefaultByteIdentical).toBe(true);
         });
     });
 
