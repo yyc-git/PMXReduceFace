@@ -445,21 +445,21 @@
               "newTri": 164
             }
           ],
-          "durationMs": 1273
+          "durationMs": 2125
         },
         {
           "name": "LOD_70",
           "label": "LOD 70%",
           "targetRatio": 0.7,
           "file": "Tda HMS illustrious Prom Dress Ver1.00 [Silver].LOD70.pmx",
-          "vertices": 20460,
-          "triangles": 28701,
+          "vertices": 20694,
+          "triangles": 28898,
           "originalVertices": 23061,
           "originalTriangles": 32358,
           "targetTriangles": 22651,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 11.30168737251993,
+          "reductionRatio": 10.692873477965259,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -467,7 +467,7 @@
               "index": 0,
               "name": "Body=====================",
               "origTri": 4021,
-              "newTri": 3995
+              "newTri": 3997
             },
             {
               "index": 1,
@@ -527,7 +527,7 @@
               "index": 10,
               "name": "hair01",
               "origTri": 7438,
-              "newTri": 5112
+              "newTri": 5189
             },
             {
               "index": 11,
@@ -545,19 +545,19 @@
               "index": 13,
               "name": "头饰",
               "origTri": 512,
-              "newTri": 404
+              "newTri": 441
             },
             {
               "index": 14,
               "name": "发辫饰带",
               "origTri": 3315,
-              "newTri": 2925
+              "newTri": 3001
             },
             {
               "index": 15,
               "name": "前发=============",
               "origTri": 1854,
-              "newTri": 1830
+              "newTri": 1835
             },
             {
               "index": 16,
@@ -656,21 +656,21 @@
               "newTri": 164
             }
           ],
-          "durationMs": 2454
+          "durationMs": 3544
         },
         {
           "name": "LOD_55",
           "label": "LOD 55%",
           "targetRatio": 0.55,
           "file": "Tda HMS illustrious Prom Dress Ver1.00 [Silver].LOD55.pmx",
-          "vertices": 20460,
-          "triangles": 28701,
+          "vertices": 20694,
+          "triangles": 28898,
           "originalVertices": 23061,
           "originalTriangles": 32358,
           "targetTriangles": 17797,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 11.30168737251993,
+          "reductionRatio": 10.692873477965259,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -678,7 +678,7 @@
               "index": 0,
               "name": "Body=====================",
               "origTri": 4021,
-              "newTri": 3995
+              "newTri": 3997
             },
             {
               "index": 1,
@@ -738,7 +738,7 @@
               "index": 10,
               "name": "hair01",
               "origTri": 7438,
-              "newTri": 5112
+              "newTri": 5189
             },
             {
               "index": 11,
@@ -756,19 +756,19 @@
               "index": 13,
               "name": "头饰",
               "origTri": 512,
-              "newTri": 404
+              "newTri": 441
             },
             {
               "index": 14,
               "name": "发辫饰带",
               "origTri": 3315,
-              "newTri": 2925
+              "newTri": 3001
             },
             {
               "index": 15,
               "name": "前发=============",
               "origTri": 1854,
-              "newTri": 1830
+              "newTri": 1835
             },
             {
               "index": 16,
@@ -867,21 +867,21 @@
               "newTri": 164
             }
           ],
-          "durationMs": 2494
+          "durationMs": 3509
         },
         {
           "name": "LOD_50",
           "label": "LOD 50%",
           "targetRatio": 0.5,
           "file": "Tda HMS illustrious Prom Dress Ver1.00 [Silver].LOD50.pmx",
-          "vertices": 20460,
-          "triangles": 28701,
+          "vertices": 20694,
+          "triangles": 28898,
           "originalVertices": 23061,
           "originalTriangles": 32358,
           "targetTriangles": 16179,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 11.30168737251993,
+          "reductionRatio": 10.692873477965259,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -889,7 +889,7 @@
               "index": 0,
               "name": "Body=====================",
               "origTri": 4021,
-              "newTri": 3995
+              "newTri": 3997
             },
             {
               "index": 1,
@@ -949,7 +949,7 @@
               "index": 10,
               "name": "hair01",
               "origTri": 7438,
-              "newTri": 5112
+              "newTri": 5189
             },
             {
               "index": 11,
@@ -967,19 +967,19 @@
               "index": 13,
               "name": "头饰",
               "origTri": 512,
-              "newTri": 404
+              "newTri": 441
             },
             {
               "index": 14,
               "name": "发辫饰带",
               "origTri": 3315,
-              "newTri": 2925
+              "newTri": 3001
             },
             {
               "index": 15,
               "name": "前发=============",
               "origTri": 1854,
-              "newTri": 1830
+              "newTri": 1835
             },
             {
               "index": 16,
@@ -1078,7 +1078,7 @@
               "newTri": 164
             }
           ],
-          "durationMs": 2383
+          "durationMs": 4294
         }
       ]
     },
@@ -1302,21 +1302,21 @@
               "newTri": 252
             }
           ],
-          "durationMs": 1945
+          "durationMs": 2475
         },
         {
           "name": "LOD_70",
           "label": "LOD 70%",
           "targetRatio": 0.7,
           "file": "TDA Utage CORAL COAST.LOD70.pmx",
-          "vertices": 34511,
-          "triangles": 34059,
+          "vertices": 34686,
+          "triangles": 34216,
           "originalVertices": 35327,
           "originalTriangles": 35282,
           "targetTriangles": 24698,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 3.466356782495328,
+          "reductionRatio": 3.0213706705969012,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -1324,13 +1324,13 @@
               "index": 0,
               "name": "Bra",
               "origTri": 552,
-              "newTri": 506
+              "newTri": 544
             },
             {
               "index": 1,
               "name": "Skin01",
               "origTri": 4854,
-              "newTri": 4718
+              "newTri": 4748
             },
             {
               "index": 2,
@@ -1390,13 +1390,13 @@
               "index": 11,
               "name": "glasses",
               "origTri": 1518,
-              "newTri": 1517
+              "newTri": 1518
             },
             {
               "index": 12,
               "name": "hat",
               "origTri": 665,
-              "newTri": 661
+              "newTri": 665
             },
             {
               "index": 13,
@@ -1414,19 +1414,19 @@
               "index": 15,
               "name": "hear3",
               "origTri": 1354,
-              "newTri": 1270
+              "newTri": 1308
             },
             {
               "index": 16,
               "name": "hear1",
               "origTri": 1961,
-              "newTri": 1906
+              "newTri": 1921
             },
             {
               "index": 17,
               "name": "Hair",
               "origTri": 1636,
-              "newTri": 1587
+              "newTri": 1609
             },
             {
               "index": 18,
@@ -1438,7 +1438,7 @@
               "index": 19,
               "name": "jacket1",
               "origTri": 6796,
-              "newTri": 6752
+              "newTri": 6759
             },
             {
               "index": 20,
@@ -1492,7 +1492,7 @@
               "index": 28,
               "name": "skin02",
               "origTri": 631,
-              "newTri": 629
+              "newTri": 631
             },
             {
               "index": 29,
@@ -1513,21 +1513,21 @@
               "newTri": 252
             }
           ],
-          "durationMs": 2775
+          "durationMs": 6816
         },
         {
           "name": "LOD_55",
           "label": "LOD 55%",
           "targetRatio": 0.55,
           "file": "TDA Utage CORAL COAST.LOD55.pmx",
-          "vertices": 34511,
-          "triangles": 34059,
+          "vertices": 34686,
+          "triangles": 34216,
           "originalVertices": 35327,
           "originalTriangles": 35282,
           "targetTriangles": 19406,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 3.466356782495328,
+          "reductionRatio": 3.0213706705969012,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -1535,13 +1535,13 @@
               "index": 0,
               "name": "Bra",
               "origTri": 552,
-              "newTri": 506
+              "newTri": 544
             },
             {
               "index": 1,
               "name": "Skin01",
               "origTri": 4854,
-              "newTri": 4718
+              "newTri": 4748
             },
             {
               "index": 2,
@@ -1601,13 +1601,13 @@
               "index": 11,
               "name": "glasses",
               "origTri": 1518,
-              "newTri": 1517
+              "newTri": 1518
             },
             {
               "index": 12,
               "name": "hat",
               "origTri": 665,
-              "newTri": 661
+              "newTri": 665
             },
             {
               "index": 13,
@@ -1625,19 +1625,19 @@
               "index": 15,
               "name": "hear3",
               "origTri": 1354,
-              "newTri": 1270
+              "newTri": 1308
             },
             {
               "index": 16,
               "name": "hear1",
               "origTri": 1961,
-              "newTri": 1906
+              "newTri": 1921
             },
             {
               "index": 17,
               "name": "Hair",
               "origTri": 1636,
-              "newTri": 1587
+              "newTri": 1609
             },
             {
               "index": 18,
@@ -1649,7 +1649,7 @@
               "index": 19,
               "name": "jacket1",
               "origTri": 6796,
-              "newTri": 6752
+              "newTri": 6759
             },
             {
               "index": 20,
@@ -1703,7 +1703,7 @@
               "index": 28,
               "name": "skin02",
               "origTri": 631,
-              "newTri": 629
+              "newTri": 631
             },
             {
               "index": 29,
@@ -1724,21 +1724,21 @@
               "newTri": 252
             }
           ],
-          "durationMs": 2490
+          "durationMs": 4076
         },
         {
           "name": "LOD_50",
           "label": "LOD 50%",
           "targetRatio": 0.5,
           "file": "TDA Utage CORAL COAST.LOD50.pmx",
-          "vertices": 34511,
-          "triangles": 34059,
+          "vertices": 34686,
+          "triangles": 34216,
           "originalVertices": 35327,
           "originalTriangles": 35282,
           "targetTriangles": 17641,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 3.466356782495328,
+          "reductionRatio": 3.0213706705969012,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -1746,13 +1746,13 @@
               "index": 0,
               "name": "Bra",
               "origTri": 552,
-              "newTri": 506
+              "newTri": 544
             },
             {
               "index": 1,
               "name": "Skin01",
               "origTri": 4854,
-              "newTri": 4718
+              "newTri": 4748
             },
             {
               "index": 2,
@@ -1812,13 +1812,13 @@
               "index": 11,
               "name": "glasses",
               "origTri": 1518,
-              "newTri": 1517
+              "newTri": 1518
             },
             {
               "index": 12,
               "name": "hat",
               "origTri": 665,
-              "newTri": 661
+              "newTri": 665
             },
             {
               "index": 13,
@@ -1836,19 +1836,19 @@
               "index": 15,
               "name": "hear3",
               "origTri": 1354,
-              "newTri": 1270
+              "newTri": 1308
             },
             {
               "index": 16,
               "name": "hear1",
               "origTri": 1961,
-              "newTri": 1906
+              "newTri": 1921
             },
             {
               "index": 17,
               "name": "Hair",
               "origTri": 1636,
-              "newTri": 1587
+              "newTri": 1609
             },
             {
               "index": 18,
@@ -1860,7 +1860,7 @@
               "index": 19,
               "name": "jacket1",
               "origTri": 6796,
-              "newTri": 6752
+              "newTri": 6759
             },
             {
               "index": 20,
@@ -1914,7 +1914,7 @@
               "index": 28,
               "name": "skin02",
               "origTri": 631,
-              "newTri": 629
+              "newTri": 631
             },
             {
               "index": 29,
@@ -1935,12 +1935,12 @@
               "newTri": 252
             }
           ],
-          "durationMs": 2556
+          "durationMs": 3669
         }
       ]
     }
   ],
-  "generatedAt": "2026-08-20T01:33:02.597Z",
+  "generatedAt": "2026-08-20T10:11:31.460Z",
   "generator": "scripts/prepare-demo.mjs → reduce.mjs",
   "skipThreshold": 10000
 }
