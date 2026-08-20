@@ -202,10 +202,10 @@ export function countSpatiallyNewBoundaryEdges(inPositions, inTris, inAlive, out
 // 输出边界在输入被三角形覆盖的表面上「抄近路/切出深湾」，形成输入表面缺失区（bay）。
 // fix5 教训「开放边界正常回缩不算洞」（XiaoMei/Tda 裙摆回缩边界边）：回缩的湾浅而宽
 // （sagitta/mouth 小）、位于输入本来就开口的外侧 → 用深湾 + 输入覆盖过滤区分。
-export const HOLE_CHAIN_MAX_EDGES = 8;          // 补面洞环最大边数（环长 ≤ 该值才补面）
+export const HOLE_CHAIN_MAX_EDGES = 16;        // 补面洞环最大边数（环长 ≤ 该值才补面）— fix: 8→16 覆盖胸部长条洞(链长>8)
 export const HOLE_MIN_AREA_RATIO = 2.0;         // 补面洞最小面积 = ratio × medE²（洞面积低于此不补）
-export const HOLE_ASSERT_MIN_AREA_RATIO = 8.0;  // verify 断言阈值（更高，防合法回缩/微小位移误报）
-export const HOLE_DEPTH_RATIO = 0.5;            // sagitta/mouth ≥ 该值 = 深湾（真洞）；浅宽回缩不算
+export const HOLE_ASSERT_MIN_AREA_RATIO = 8.0;  // verify 断言阈值（更高，防合法回缩/微小位移误报）— 保持不变
+export const HOLE_DEPTH_RATIO = 0.3;           // sagitta/mouth ≥ 该值 = 深湾（真洞）；浅宽回缩不算 — fix: 0.5→0.3 覆盖浅湾 V 形洞
 export const HOLE_MAX_MOUTH_RATIO = 15.0;       // 洞 mouth ≤ ratio × medE（排除整裙边级长回缩带）
 export const HOLE_SOLID_DIST = 0.6;             // 洞质心距最近「输入三角形质心」< 该值 = 输入原表面覆盖
 
@@ -874,7 +874,7 @@ export function collapseCreatesHole(tris, aliveT, vTris, u, v, ignoreEdges = nul
             if (!tris[ti].includes(u)) post++;
         }
         if (post > 2) return true;
-        if ((preU === 2 || preV === 2) && post < 2) {
+        if ((preU === 2 || preV === 2 || (preU === 1 && preV === 1)) && post < 2) {
             // 洞：内部边分离成边界。仅当该边属于 ignoreEdges（共点边缺陷清理）时才豁免。
             const keyU = edgeKey(u, w);
             const keyV = edgeKey(v, w);
