@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 // reduce.mjs — PMX 减面主入口（QEM 约束边折叠）
-// 用法：node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"] [--skip-threshold <n>]
+// 用法：node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"] [--skip-threshold <n>] [--quality-first]
 // 默认目标：未给 --target-tri / --target-ratio 时按 5 万面（targetTriangles 默认 50000）；
 // 跳过阈值：--skip-threshold N 独立于目标（默认 50000），totalTri ≤ targetTri 且 ≤ skipThreshold 时跳过 QEM 透传输入。
+// 质量优先：--quality-first 自动抬升保守参数（minRetention → 0.5、targetRatio → max(targetRatio, 0.7)），
+//           显式传参（如 --min-retention 0.2 / --target-ratio 0.9）优先于 quality-first 设置的默认值。
 // 输出：stdout 打印统计 JSON
 
 import fs from 'fs';
@@ -33,13 +35,14 @@ function parseArgs(argv) {
         else if (a === '--min-retention') args.minRetention = parseFloat(argv[++i]);
         else if (a === '--lock-small-materials') args.lockSmallMaterials = argv[++i] !== 'false';
         else if (a === '--skip-threshold') args.skipThreshold = parseInt(String(argv[++i]).replace(/,/g, ''), 10);
+        else if (a === '--quality-first') args.qualityFirst = true;
     }
     // 只给了 --target-ratio（未给 --target-tri）→ 比例模式：显式置 targetTriangles=null，
     // 避免 reduceFaces 的默认目标 50000 覆盖比例目标。
     if (args.targetTriGiven !== true && args.targetRatio !== undefined) args.targetTriangles = null;
     // 必填项 + 数值项校验（非法即明确报错退出，避免静默 NaN 减面）
     if (!args.input || !args.output) {
-        console.error('usage: node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"] [--min-retention 0.3] [--lock-small-materials true|false]');
+        console.error('usage: node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"] [--min-retention 0.3] [--lock-small-materials true|false] [--quality-first]');
         process.exit(1);
     }
     for (const [name, val] of [['--target-ratio', args.targetRatio], ['--target-tri', args.targetTriangles], ['--min-retention', args.minRetention], ['--skip-threshold', args.skipThreshold]]) {
@@ -51,18 +54,26 @@ function parseArgs(argv) {
     return args;
 }
 
-export function reduceFaces({
-    input,
-    output,
-    targetRatio = 0.5,
-    targetTriangles = 50000,
-    lockMorph = true,
-    lockSeams = true,
-    lockMaterials = null,
-    minRetention = 0.3,
-    lockSmallMaterials = true,
-    skipThreshold = 50000,
-}) {
+export function reduceFaces(rawOpts = {}) {
+    // quality-first：只在未显式给定时抬升默认值（显式参数优先，可覆盖 quality-first 设置的保守值）
+    const opts = { ...rawOpts };
+    if (opts.qualityFirst) {
+        if (!('minRetention' in opts)) opts.minRetention = 0.5;
+        opts.targetRatio = Math.max(opts.targetRatio ?? 0.5, 0.7);
+    }
+    const {
+        input,
+        output,
+        targetRatio = 0.5,
+        targetTriangles = 50000,
+        lockMorph = true,
+        lockSeams = true,
+        lockMaterials = null,
+        minRetention = 0.3,
+        lockSmallMaterials = true,
+        skipThreshold = 50000,
+        qualityFirst = false,
+    } = opts;
     const t0 = Date.now();
     const model = loadPmx(input, false);
 
@@ -109,6 +120,7 @@ export function reduceFaces({
             protectedMaterials,
             minRetention,
             lockSmallMaterials,
+            qualityFirst,
             materialProtection: [],
             patchedHoles: 0,
             patchedTriangles: 0,
@@ -227,6 +239,7 @@ export function reduceFaces({
         protectedMaterials,
         minRetention,
         lockSmallMaterials,
+        qualityFirst,
         materialProtection: stats.protectedStats || [],
         patchedHoles: stats.patchedHoles || 0,
         patchedTriangles: stats.patchedTriangles || 0,

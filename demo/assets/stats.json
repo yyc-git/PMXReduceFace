@@ -445,21 +445,21 @@
               "newTri": 164
             }
           ],
-          "durationMs": 2125
+          "durationMs": 1706
         },
         {
           "name": "LOD_70",
           "label": "LOD 70%",
           "targetRatio": 0.7,
           "file": "Tda HMS illustrious Prom Dress Ver1.00 [Silver].LOD70.pmx",
-          "vertices": 20694,
-          "triangles": 28898,
+          "vertices": 20735,
+          "triangles": 28969,
           "originalVertices": 23061,
           "originalTriangles": 32358,
           "targetTriangles": 22651,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 10.692873477965259,
+          "reductionRatio": 10.473453241856722,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -509,7 +509,7 @@
               "index": 7,
               "name": "face02",
               "origTri": 509,
-              "newTri": 183
+              "newTri": 254
             },
             {
               "index": 8,
@@ -656,21 +656,21 @@
               "newTri": 164
             }
           ],
-          "durationMs": 3544
+          "durationMs": 3719
         },
         {
           "name": "LOD_55",
           "label": "LOD 55%",
           "targetRatio": 0.55,
           "file": "Tda HMS illustrious Prom Dress Ver1.00 [Silver].LOD55.pmx",
-          "vertices": 20694,
-          "triangles": 28898,
+          "vertices": 20735,
+          "triangles": 28969,
           "originalVertices": 23061,
           "originalTriangles": 32358,
-          "targetTriangles": 17797,
+          "targetTriangles": 22651,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 10.692873477965259,
+          "reductionRatio": 10.473453241856722,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -720,7 +720,7 @@
               "index": 7,
               "name": "face02",
               "origTri": 509,
-              "newTri": 183
+              "newTri": 254
             },
             {
               "index": 8,
@@ -867,21 +867,21 @@
               "newTri": 164
             }
           ],
-          "durationMs": 3509
+          "durationMs": 3261
         },
         {
           "name": "LOD_50",
           "label": "LOD 50%",
           "targetRatio": 0.5,
           "file": "Tda HMS illustrious Prom Dress Ver1.00 [Silver].LOD50.pmx",
-          "vertices": 20694,
-          "triangles": 28898,
+          "vertices": 20735,
+          "triangles": 28969,
           "originalVertices": 23061,
           "originalTriangles": 32358,
-          "targetTriangles": 16179,
+          "targetTriangles": 22651,
           "skipThreshold": 10000,
           "materials": 32,
-          "reductionRatio": 10.692873477965259,
+          "reductionRatio": 10.473453241856722,
           "reductionMet": false,
           "skipped": false,
           "perMaterial": [
@@ -931,7 +931,7 @@
               "index": 7,
               "name": "face02",
               "origTri": 509,
-              "newTri": 183
+              "newTri": 254
             },
             {
               "index": 8,
@@ -1078,7 +1078,7 @@
               "newTri": 164
             }
           ],
-          "durationMs": 4294
+          "durationMs": 3179
         }
       ]
     },
@@ -1302,7 +1302,7 @@
               "newTri": 252
             }
           ],
-          "durationMs": 2475
+          "durationMs": 2434
         },
         {
           "name": "LOD_70",
@@ -1513,7 +1513,7 @@
               "newTri": 252
             }
           ],
-          "durationMs": 6816
+          "durationMs": 3539
         },
         {
           "name": "LOD_55",
@@ -1524,7 +1524,7 @@
           "triangles": 34216,
           "originalVertices": 35327,
           "originalTriangles": 35282,
-          "targetTriangles": 19406,
+          "targetTriangles": 24698,
           "skipThreshold": 10000,
           "materials": 32,
           "reductionRatio": 3.0213706705969012,
@@ -1724,7 +1724,7 @@
               "newTri": 252
             }
           ],
-          "durationMs": 4076
+          "durationMs": 3902
         },
         {
           "name": "LOD_50",
@@ -1735,7 +1735,7 @@
           "triangles": 34216,
           "originalVertices": 35327,
           "originalTriangles": 35282,
-          "targetTriangles": 17641,
+          "targetTriangles": 24698,
           "skipThreshold": 10000,
           "materials": 32,
           "reductionRatio": 3.0213706705969012,
@@ -1935,12 +1935,12 @@
               "newTri": 252
             }
           ],
-          "durationMs": 3669
+          "durationMs": 3412
         }
       ]
     }
   ],
-  "generatedAt": "2026-08-20T10:11:31.460Z",
+  "generatedAt": "2026-08-20T11:54:41.624Z",
   "generator": "scripts/prepare-demo.mjs → reduce.mjs",
   "skipThreshold": 10000
 }

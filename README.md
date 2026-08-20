@@ -25,6 +25,8 @@
 - **材质级锁定**：`--lock-materials` 指定材质（如脸/眼）整组保留，保留率 ≥ 90%（verify 断言）
 - **min-retention 保底**：每材质最多削到原面数的 `--min-retention` 比例，防止某部位过度减面
 - **双目标控制**：`--target-ratio`（比例）与 `--target-tri`（绝对三角形数）任选其一
+- **质量优先策略**：`--quality-first` 一键保守减面 —— `minRetention` 抬到 `0.5`、`targetRatio` 抬到 `max(ratio, 0.7)`（减面率上限 30%），显式参数（如 `--min-retention 0.2`）优先可覆盖；默认目标 5 万面，**≤5 万面模型直接透传、不做 QEM 减面**
+- **跳过阈值**：`--skip-threshold`（默认 `50000`）独立于减面目标，`totalTri ≤ 目标` 且 `≤ 跳过阈值` 时才跳过 QEM 透传输入（小模型不再被硬削，大模型可放宽阈值强制减面）
 - **字节级重写**：减面段（顶点/面/材质面数）就地重写，morph/骨/刚体等未减面段原样保留
 - **内置验证**：`verify.mjs` 全量断言（锁定顶点保留 / 无退化 / 法线单位 / 权重归一化 / 材质一致）
 - **MIT 协议**：完全开源，可自由商用
@@ -63,7 +65,12 @@ node src/tool/pmx-face-reduce/reduce.mjs \
   [--lock-seams true] \
   [--lock-materials "0,1"] \
   [--min-retention 0.3] \
-  [--lock-small-materials true]
+  [--lock-small-materials true] \
+  [--skip-threshold 50000] \
+  [--quality-first]
+
+# 质量优先：保守减面，减面率上限 30%（可被显式参数覆盖）
+node src/tool/pmx-face-reduce/reduce.mjs --input in.pmx --output out.pmx --quality-first
 
 # 安装为 npm 依赖后可直接用 bin
 npx pmx-reduce-face --input in.pmx --output out.pmx --target-ratio 0.5
@@ -80,6 +87,10 @@ npx pmx-reduce-face --input in.pmx --output out.pmx --target-ratio 0.5
 | `--lock-materials` | 无 | 逗号分隔材质索引（如 `"0,1"`），整组锁定 |
 | `--min-retention` | `0.3` | 大材质最低保留比例（0 = 关闭动态保护） |
 | `--lock-small-materials` | `true` | 小材质（≤500 面）是否 100% 保留（`false` 关闭） |
+| `--skip-threshold` | `50000` | 跳过阈值：`totalTri ≤ 目标` 且 `≤ 此阈值` 时跳过 QEM、输出与输入字节级一致（≤5 万面不减面；设小值可强制小模型走 QEM） |
+| `--quality-first` | `false` | 质量优先：`minRetention` → `0.5`、`targetRatio` → `max(ratio, 0.7)`（减面率上限 30%）；输出 JSON 标记 `qualityFirst: true`。显式传参优先（如 `--min-retention 0.2` 覆盖 0.5） |
+
+> **减面策略（质量优先）**：默认目标 5 万面 —— 模型总面数 ≤ 5 万（且 ≤ `--skip-threshold`）时直接透传输入、不跑 QEM，避免小模型被 0.5 比例硬削。需要更大减面时显式传 `--target-tri` / `--target-ratio`，或放宽 `--skip-threshold`；需要保守减面时加 `--quality-first`（保留更多面，减面率上限 30%）。
 
 `reduce.mjs` 的 stdout 输出统计 JSON（`originalTriangles` / `newTriangles` / `reductionRatio` / `perMaterial` / `reductionMet` 等），失败退出码非 0。
 
@@ -119,8 +130,10 @@ import { buildLockedSet } from 'pmx-reduce-face/src/tool/pmx-face-reduce/lock-se
 | `lockMaterials` | `null` | 材质索引数组 |
 | `minRetention` | `0.3` | 大材质保底比例 |
 | `lockSmallMaterials` | `true` | 小材质全锁 |
+| `skipThreshold` | `50000` | 跳过阈值（≤ 目标且 ≤ 阈值时透传输入） |
+| `qualityFirst` | `false` | 质量优先：`minRetention` → `0.5`、`targetRatio` → `max(ratio, 0.7)`（显式传入的 `minRetention` 优先） |
 
-返回：`{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs, skipped }`。`skipped: true` 表示总面数 ≤ 目标（≤5 万默认）未进入 QEM，输出与输入字节级一致。
+返回：`{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs, skipped, qualityFirst }`。`skipped: true` 表示总面数 ≤ 目标（≤5 万默认）未进入 QEM，输出与输入字节级一致；`qualityFirst: true` 表示本次为质量优先模式。
 
 **`verifyFaces(options)`** — 减面结果全量断言（等价于 verify CLI）
 
@@ -313,6 +326,8 @@ BDD 覆盖：输出可重解析 / 面数减半 / morph 锁定位置不变 / 无�
 - **Material-level locking**: `--lock-materials` keeps selected materials (face/eyes) entirely, retention ≥ 90% (asserted by verify)
 - **min-retention floor**: each material is capped at `--min-retention` of its original face count, preventing over-decimation of any region
 - **Dual targets**: `--target-ratio` (ratio) or `--target-tri` (absolute triangle count), either one works
+- **Quality-first strategy**: `--quality-first` applies conservative settings in one flag — `minRetention` → `0.5` and `targetRatio` → `max(ratio, 0.7)` (≤ 30% reduction), with explicit flags taking precedence (e.g. `--min-retention 0.2` overrides); the default target is 50k triangles, so models **≤ 50k triangles are passed through with no QEM reduction**
+- **Skip threshold**: `--skip-threshold` (default `50000`) is independent of the reduction target; QEM is skipped only when `totalTri ≤ target` *and* `≤ skip threshold` (small models are never over-cut; lower it to force reduction on small models)
 - **Byte-level rewrite**: only the vertex / face-index / material-faceCount sections are rewritten in place; morphs, bones, rigid bodies and other untouched sections are preserved byte-for-byte
 - **Built-in verification**: `verify.mjs` full assertions (locked vertices preserved / no degenerates / unit normals / normalized weights / material consistency)
 - **MIT licensed**: fully open source, free for commercial use
@@ -351,7 +366,12 @@ node src/tool/pmx-face-reduce/reduce.mjs \
   [--lock-seams true] \
   [--lock-materials "0,1"] \
   [--min-retention 0.3] \
-  [--lock-small-materials true]
+  [--lock-small-materials true] \
+  [--skip-threshold 50000] \
+  [--quality-first]
+
+# Quality first: conservative reduction, ≤ 30% cut (overridable by explicit flags)
+node src/tool/pmx-face-reduce/reduce.mjs --input in.pmx --output out.pmx --quality-first
 
 # As an npm dependency, use the bin directly
 npx pmx-reduce-face --input in.pmx --output out.pmx --target-ratio 0.5
@@ -368,6 +388,8 @@ npx pmx-reduce-face --input in.pmx --output out.pmx --target-ratio 0.5
 | `--lock-materials` | none | comma-separated material indices (e.g. `"0,1"`) to lock entirely |
 | `--min-retention` | `0.3` | minimum retention ratio for large materials (0 disables dynamic protection) |
 | `--lock-small-materials` | `true` | keep small materials (≤ 500 faces) at 100% (`false` disables) |
+| `--skip-threshold` | `50000` | skip threshold: when `totalTri ≤ target` *and* `≤ this value`, QEM is skipped and the output is byte-identical to the input (models ≤ 50k are not decimated; set it lower to force QEM on small models) |
+| `--quality-first` | `false` | quality first: `minRetention` → `0.5`, `targetRatio` → `max(ratio, 0.7)` (≤ 30% reduction); the output JSON is tagged `qualityFirst: true`. Explicit flags take precedence (e.g. `--min-retention 0.2` overrides 0.5) |
 
 `reduce.mjs` prints a stats JSON to stdout (`originalTriangles` / `newTriangles` / `reductionRatio` / `perMaterial` / `reductionMet`, ...); exit code is non-zero on failure.
 
@@ -407,8 +429,10 @@ import { buildLockedSet } from 'pmx-reduce-face/src/tool/pmx-face-reduce/lock-se
 | `lockMaterials` | `null` | material index array |
 | `minRetention` | `0.3` | large-material floor ratio |
 | `lockSmallMaterials` | `true` | lock small materials fully |
+| `skipThreshold` | `50000` | skip threshold (pass through when ≤ target and ≤ threshold) |
+| `qualityFirst` | `false` | quality first: `minRetention` → `0.5`, `targetRatio` → `max(ratio, 0.7)` (an explicit `minRetention` takes precedence) |
 
-Returns: `{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs, skipped }`. `skipped: true` means totalTri ≤ target (default 50k): QEM was not run and the output is byte-identical to the input.
+Returns: `{ input, output, originalVertices, newVertices, originalTriangles, newTriangles, targetTriangles, lockedCount, reductionRatio, reductionMet, perMaterial, materialProtection, collapses, rejected, durationMs, skipped, qualityFirst }`. `skipped: true` means totalTri ≤ target (default 50k): QEM was not run and the output is byte-identical to the input; `qualityFirst: true` marks a quality-first run.
 
 **`verifyFaces(options)`** — full assertions on a reduced result (equivalent to the verify CLI)
 

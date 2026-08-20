@@ -20,6 +20,9 @@ const STATS_JSON = path.join(ASSETS, 'stats.json');
 // 默认 50000 保持（reduce.mjs 内），demo 的 LOD 生成显式传 10000，让 1 万~5 万面的小模型也走 QEM。
 const SKIP_THRESHOLD = 10000;
 
+// 全部 LOD 档位统一加 --quality-first：minRetention 抬到 0.5、targetRatio 抬到 max(ratio, 0.7)，
+// 减面率上限 30%，避免 LOD55/50 过度削面破坏质量（显式 --target-ratio 仍可覆盖，见 reduce.mjs）。
+
 // LOD 档位（质量优先，第五轮）：targetRatio 1.0 / 0.7 / 0.55 / 0.5 → LOD_100 / LOD_70 / LOD_55 / LOD_50。
 // 放弃「LOD25/10」名不副实的档位：质量守卫（sliver/拓扑/翻转/突起+cap）把减面地板抬到 ≈33493
 // （>27114），LOD55/50 名义比例低于地板 → 贴地板（HUD 显示「已到保护下限」）。
@@ -69,6 +72,7 @@ function runReduce(model, lod) {
         '--output', outputPath,
         '--target-ratio', String(lod.targetRatio),
         '--skip-threshold', String(SKIP_THRESHOLD),
+        '--quality-first',
     ];
     const res = spawnSync(process.execPath, [REDUCE, ...args], { encoding: 'utf-8', timeout: 600000 });
     if (res.status !== 0) {
