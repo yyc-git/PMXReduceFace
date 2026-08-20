@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // reduce.mjs — PMX 减面主入口（QEM 约束边折叠）
-// 用法：node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"]
-// 默认目标：未给 --target-tri / --target-ratio 时按 5 万面（targetTriangles 默认 50000），≤5 万面模型直接跳过 QEM 透传输入
+// 用法：node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"] [--skip-threshold <n>]
+// 默认目标：未给 --target-tri / --target-ratio 时按 5 万面（targetTriangles 默认 50000）；
+// 跳过阈值：--skip-threshold N 独立于目标（默认 50000），totalTri ≤ targetTri 且 ≤ skipThreshold 时跳过 QEM 透传输入。
 // 输出：stdout 打印统计 JSON
 
 import fs from 'fs';
@@ -31,6 +32,7 @@ function parseArgs(argv) {
         }
         else if (a === '--min-retention') args.minRetention = parseFloat(argv[++i]);
         else if (a === '--lock-small-materials') args.lockSmallMaterials = argv[++i] !== 'false';
+        else if (a === '--skip-threshold') args.skipThreshold = parseInt(String(argv[++i]).replace(/,/g, ''), 10);
     }
     // 只给了 --target-ratio（未给 --target-tri）→ 比例模式：显式置 targetTriangles=null，
     // 避免 reduceFaces 的默认目标 50000 覆盖比例目标。
@@ -40,7 +42,7 @@ function parseArgs(argv) {
         console.error('usage: node reduce.mjs --input <pmx> --output <pmx> [--target-ratio 0.5] [--target-tri <absoluteTri>] [--lock-morph true] [--lock-seams true] [--lock-materials "7,8,9,10,11,12,13"] [--min-retention 0.3] [--lock-small-materials true|false]');
         process.exit(1);
     }
-    for (const [name, val] of [['--target-ratio', args.targetRatio], ['--target-tri', args.targetTriangles], ['--min-retention', args.minRetention]]) {
+    for (const [name, val] of [['--target-ratio', args.targetRatio], ['--target-tri', args.targetTriangles], ['--min-retention', args.minRetention], ['--skip-threshold', args.skipThreshold]]) {
         if (val !== undefined && val !== null && !Number.isFinite(val)) {
             console.error(`invalid numeric value for ${name}: ${String(val)}`);
             process.exit(1);
@@ -59,6 +61,7 @@ export function reduceFaces({
     lockMaterials = null,
     minRetention = 0.3,
     lockSmallMaterials = true,
+    skipThreshold = 50000,
 }) {
     const t0 = Date.now();
     const model = loadPmx(input, false);
@@ -87,9 +90,10 @@ export function reduceFaces({
           }))
         : [];
 
-    // 目标已达成（totalTri ≤ targetTri，含默认 50000）：跳过 QEM，直接透传输入文件（字节级一致），
+    // 跳过 QEM 的判定 = 目标已达成(totalTri ≤ targetTri,含默认 50000)且 totalTri ≤ skipThreshold(跳过阈值,
+    // 默认 50000,demo 传 10000)→ 直接透传输入文件(字节级一致)，
     // stats 如实标记 skipped/lockedCount；不调 collapseMesh，不影响 qem.mjs 质量 reject 逻辑。
-    if (totalTri <= targetTri) {
+    if (totalTri <= targetTri && totalTri <= skipThreshold) {
         fs.copyFileSync(input, output);
         return {
             input,
@@ -99,6 +103,7 @@ export function reduceFaces({
             originalTriangles: totalTri,
             newTriangles: totalTri,
             targetTriangles: targetTri,
+            skipThreshold,
             lockedCount: locked.size,
             lockMaterials: lockMaterials || [],
             protectedMaterials,
@@ -216,6 +221,7 @@ export function reduceFaces({
         originalTriangles: totalTri,
         newTriangles: finalTriangles.length,
         targetTriangles: targetTri,
+        skipThreshold,
         lockedCount: locked.size,
         lockMaterials: lockMaterials || [],
         protectedMaterials,

@@ -1,4 +1,4 @@
-// demo/main.ts — PMXReduceFace 静态 LOD 展示 Demo
+// demo/main.ts — PMXReduceFace 静态 LOD 展示 Demo（多模型：XiaoMei / Xiaye1 / XiaHui）
 // three MMDLoader 加载原版 PMX + 预生成 LOD 减面版，OrbitControls 旋转/缩放，
 // HUD 实时显示当前 LOD 的顶点数/三角形数/材质数/减面率；stats.json（prepare-demo 生成）作为统计来源，
 // 缺失时回退到页面内实时解析的 mesh 几何统计。
@@ -8,15 +8,30 @@ import { MMDLoader } from 'three/examples/jsm/loaders/MMDLoader.js';
 
 // 资源基目录：webpack dev-server 把 demo/assets 静态托管到 /assets（pmx 与 tex/ 同目录，纹理相对路径自动解析）
 const ASSET_BASE = '/assets/';
-const MODEL_NAME = 'XiaoMeiOriginFix_02_elrein';
 
-// LOD 档位与 scripts/prepare-demo.mjs 生成的 stats.json 对齐（name → 文件名后缀）
-const LODS: Array<{ name: string; file: string }> = [
-  { name: 'LOD_100', file: `${MODEL_NAME}.LOD100.pmx` },
-  { name: 'LOD_70', file: `${MODEL_NAME}.LOD70.pmx` },
-  { name: 'LOD_55', file: `${MODEL_NAME}.LOD55.pmx` },
-  { name: 'LOD_50', file: `${MODEL_NAME}.LOD50.pmx` },
+// 模型注册表：key（curModelKey，与 stats.json 的 models[].model 对齐）/ label / baseDir / fileName（不带 .pmx）
+const MODELS: Array<{ key: string; label: string; baseDir: string; fileName: string }> = [
+  { key: 'XiaoMei', label: 'XiaoMei (孙晓美)', baseDir: '', fileName: 'XiaoMeiOriginFix_02_elrein' },
+  { key: 'Xiaye1', label: 'Xiaye1 (夏夜1)', baseDir: 'Xiaye1/', fileName: 'Tda HMS illustrious Prom Dress Ver1.00 [Silver]' },
+  { key: 'XiaHui', label: 'XiaHui (夏卉)', baseDir: 'XiaHui/', fileName: 'TDA Utage CORAL COAST' },
 ];
+
+// LOD 档位定义（与 scripts/prepare-demo.mjs 生成的 stats.json 对齐：name → 文件名后缀）
+const LOD_DEFS: Array<{ name: string; label: string; suffix: string }> = [
+  { name: 'LOD_100', label: 'LOD 100%', suffix: 'LOD100' },
+  { name: 'LOD_70', label: 'LOD 70%', suffix: 'LOD70' },
+  { name: 'LOD_55', label: 'LOD 55%', suffix: 'LOD55' },
+  { name: 'LOD_50', label: 'LOD 50%', suffix: 'LOD50' },
+];
+
+// 每个模型的 LOD 文件列表（<fileName>.<suffix>.pmx）
+const MODEL_LODS_MAP: Map<string, Array<{ name: string; file: string }>> = new Map();
+for (const m of MODELS) {
+  MODEL_LODS_MAP.set(
+    m.key,
+    LOD_DEFS.map((lod) => ({ name: lod.name, file: `${m.fileName}.${lod.suffix}.pmx` })),
+  );
+}
 
 interface PerMaterialStat {
   index: number;
@@ -37,10 +52,15 @@ interface LodStat {
   reductionMet: boolean;
   perMaterial: PerMaterialStat[];
 }
-interface StatsJson {
+interface ModelStats {
   model: string;
+  file: string;
+  baseDir: string;
   original: { vertices: number; triangles: number; materials: number };
   lods: LodStat[];
+}
+interface StatsJson {
+  models: ModelStats[];
 }
 
 // ---------- DOM ----------
@@ -48,6 +68,7 @@ const container = document.getElementById('container') as HTMLElement;
 const hudBody = document.getElementById('hud-body') as HTMLElement;
 const msg = document.getElementById('msg') as HTMLElement;
 const lodButtonsEl = document.getElementById('lod-buttons') as HTMLElement;
+const modelButtonsEl = document.getElementById('model-buttons') as HTMLElement;
 
 // ---------- 渲染场景 ----------
 const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -85,10 +106,17 @@ scene.add(grid);
 const loader = new MMDLoader();
 let mesh: THREE.SkinnedMesh | null = null;
 let stats: StatsJson | null = null;
+let curModelKey = 'XiaoMei'; // 默认展示 XiaoMei（兼容现有 demo 行为）
 let curName: string | null = null;
 let loadId = 0;
 let framed = false;
 const activeButtons = new Map<string, HTMLButtonElement>();
+const modelActiveButtons = new Map<string, HTMLButtonElement>();
+
+function curModelStats(): ModelStats | null {
+  if (!stats) return null;
+  return stats.models.find((m) => m.model === curModelKey) ?? null;
+}
 
 function disposeMesh(m: THREE.SkinnedMesh): void {
   m.geometry.dispose();
@@ -162,9 +190,10 @@ function liveStats(): { vertices: number; triangles: number; materials: number }
 function updateHud(): void {
   if (!mesh) return;
   const live = liveStats();
-  const origTri = stats ? stats.original.triangles : live.triangles;
+  const modelStats = curModelStats();
+  const origTri = modelStats ? modelStats.original.triangles : live.triangles;
   const reduction = ((1 - live.triangles / origTri) * 100).toFixed(2);
-  const lodStat = stats ? stats.lods.find((l) => l.name === curName) : null;
+  const lodStat = modelStats ? modelStats.lods.find((l) => l.name === curName) : null;
   // 减面未达目标（--target-tri 低于保护下限 / 减面率已被 min-retention 与小材质锁定卡住）
   const floorNote =
     lodStat && !lodStat.reductionMet
@@ -175,7 +204,9 @@ function updateHud(): void {
         lodStat.perMaterial.length
       } 项</div>`
     : '';
+  const modelLabel = MODELS.find((m) => m.key === curModelKey)?.label ?? curModelKey;
   hudBody.innerHTML = [
+    `<div>当前模型：<b>${modelLabel}</b></div>`,
     `<div>当前 LOD：<b>${curName ?? '—'}</b></div>`,
     `<div>顶点数：${live.vertices.toLocaleString()}</div>`,
     `<div>三角形数：${live.triangles.toLocaleString()}（原版 ${origTri.toLocaleString()}）</div>`,
@@ -187,12 +218,13 @@ function updateHud(): void {
 }
 
 function loadLod(name: string): void {
-  const def = LODS.find((l) => l.name === name);
+  const def = MODEL_LODS_MAP.get(curModelKey)?.find((l) => l.name === name);
   if (!def || name === curName) return;
+  const model = MODELS.find((m) => m.key === curModelKey)!;
   msg.textContent = `加载 ${name}…`;
   // 加载令牌：快速连点时只保留最后一次请求（后完成/后发出的回调忽略，避免竞态覆盖）
   const id = ++loadId;
-  const url = ASSET_BASE + def.file;
+  const url = ASSET_BASE + model.baseDir + def.file;
   loader.load(
     url,
     (m: THREE.SkinnedMesh) => {
@@ -228,12 +260,33 @@ function loadLod(name: string): void {
   );
 }
 
-// ---------- LOD 控制条 ----------
-for (const def of LODS) {
+// ---------- 模型切换（#model-buttons）----------
+// 模型切换 → 当前 LOD 状态清空 → 重新加载默认 LOD_100
+function loadModel(key: string): void {
+  if (key === curModelKey) return;
+  curModelKey = key;
+  curName = null;
+  framed = false;
+  for (const btn of activeButtons.values()) btn.classList.toggle('active', false);
+  for (const [k, btn] of modelActiveButtons) btn.classList.toggle('active', k === key);
+  loadLod('LOD_100');
+}
+
+// ---------- 控制条 ----------
+for (const m of MODELS) {
   const btn = document.createElement('button');
-  btn.textContent = def.name;
-  btn.onclick = () => loadLod(def.name);
-  activeButtons.set(def.name, btn);
+  btn.textContent = m.label;
+  btn.onclick = () => loadModel(m.key);
+  modelActiveButtons.set(m.key, btn);
+  modelButtonsEl.appendChild(btn);
+}
+modelActiveButtons.get('XiaoMei')?.classList.add('active');
+
+for (const lod of LOD_DEFS) {
+  const btn = document.createElement('button');
+  btn.textContent = lod.name;
+  btn.onclick = () => loadLod(lod.name);
+  activeButtons.set(lod.name, btn);
   lodButtonsEl.appendChild(btn);
 }
 
@@ -250,7 +303,8 @@ function boot(): void {
     .finally(() => {
       // 诊断模式：?lod=LOD_70 等可指定初始 LOD
       const lodParam = new URLSearchParams(window.location.search).get('lod');
-      const initial = lodParam && LODS.some((l) => l.name === lodParam) ? lodParam : 'LOD_100';
+      const allLodNames = [...MODEL_LODS_MAP.values()].flat().map((l) => l.name);
+      const initial = lodParam && allLodNames.includes(lodParam) ? lodParam : 'LOD_100';
       loadLod(initial);
     });
 }

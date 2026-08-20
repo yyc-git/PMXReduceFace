@@ -22,13 +22,23 @@
     font-size: 13px; border-radius: 6px; display: flex; align-items: center; gap: 8px;
     flex-wrap: wrap; justify-content: center;
   }
-  #controls button {
+  #controls button,
+  #model-bar button {
     padding: 6px 16px; font-size: 13px; cursor: pointer; border: 1px solid #555;
     border-radius: 4px; background: #3c3c3c; color: #eee;
   }
-  #controls button:hover { background: #4a4a4a; }
-  #controls button.active { background: #2d5d3c; border-color: #4a9a6a; color: #fff; }
-  #controls button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #controls button:hover,
+  #model-bar button:hover { background: #4a4a4a; }
+  #controls button.active,
+  #model-bar button.active { background: #2d5d3c; border-color: #4a9a6a; color: #fff; }
+  #controls button:disabled,
+  #model-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #model-bar {
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 10;
+    background: rgba(0,0,0,0.78); color: #eee; padding: 8px 14px;
+    font-size: 13px; border-radius: 6px; display: flex; align-items: center; gap: 8px;
+    flex-wrap: wrap; justify-content: center;
+  }
   #msg { color: #ff8; min-height: 1em; }
   .hint {
     position: fixed; bottom: 56px; left: 50%; transform: translateX(-50%); z-index: 9;
@@ -43,6 +53,10 @@
   <div id="hud-body">加载中…</div>
 </div>
 <div class="hint">鼠标拖拽旋转 · 滚轮缩放 · 右键平移</div>
+<div id="model-bar">
+  <span>模型：</span>
+  <span id="model-buttons"></span>
+</div>
 <div id="controls">
   <span>LOD：</span>
   <span id="lod-buttons"></span>

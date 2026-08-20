@@ -8,6 +8,9 @@ screenshots/
 
 .opencode-brief*.md
 
+# opencode 会话元数据（环境自动生成，不入库）
+.opencode-session-meta/
+
 # 诊断落盘产物（diag-sock.mjs 输出；_tmp-* 防历史遗留）
 diag-sock.json
 _tmp-*

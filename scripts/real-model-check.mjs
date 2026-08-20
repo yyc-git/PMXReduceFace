@@ -9,6 +9,7 @@
 //   --input <pmx>        要检查的模型（默认 demo/assets/XiaoMeiOriginFix_02_elrein.pmx）
 //   --output <pmx>       减面产物路径（默认 os.tmpdir() 临时文件，不污染仓库）
 //   --target-ratio <n>   减面目标比例（默认 0.5）
+//   --skip-threshold <n> 跳过阈值（透传给 reduce.mjs；默认不传，由 reduce.mjs 默认 50000）
 //   --keep               保留减面产物（默认结束后删除临时文件）
 //   --skip-quality       跳过视觉质量断言（BurumaSet 尺寸/指尖突起/跨曲面超尺寸/非流形/袜区洞）
 // 注意（质量优先，第六轮）：质量守卫把 demo 模型减面地板抬到 ≈38686（> 名义目标 27114）→
@@ -42,13 +43,14 @@ const MATERIAL_QUALITY_KEYS = [
 ];
 
 function parseArgs(argv) {
-    const args = { input: null, output: null, targetRatio: 0.5, targetTri: null, keep: false, skipQuality: false };
+    const args = { input: null, output: null, targetRatio: 0.5, targetTri: null, skipThreshold: null, keep: false, skipQuality: false };
     for (let i = 0; i < argv.length; i++) {
         const a = argv[i];
         if (a === '--input') args.input = argv[++i];
         else if (a === '--output') args.output = argv[++i];
         else if (a === '--target-ratio') args.targetRatio = parseFloat(argv[++i]);
         else if (a === '--target-tri') args.targetTri = parseInt(String(argv[++i]).replace(/,/g, ''), 10);
+        else if (a === '--skip-threshold') args.skipThreshold = parseInt(String(argv[++i]).replace(/,/g, ''), 10);
         else if (a === '--keep') args.keep = true;
         else if (a === '--skip-quality') args.skipQuality = true;
         else if (!a.startsWith('-') && !args.input) args.input = a; // 兼容位置参数
@@ -59,6 +61,7 @@ function parseArgs(argv) {
 function runReduce(args) {
     const extra = [];
     if (args.targetTri != null) extra.push('--target-tri', String(args.targetTri));
+    if (args.skipThreshold != null) extra.push('--skip-threshold', String(args.skipThreshold));
     const res = spawnSync(process.execPath, [REDUCE, '--input', args.input, '--output', args.output, '--target-ratio', String(args.targetRatio), ...extra], { encoding: 'utf-8', timeout: 600000 });
     let stats = null;
     try {
@@ -72,6 +75,7 @@ function runReduce(args) {
 function runVerify(args) {
     const extra = [];
     if (args.targetTri != null) extra.push('--target-tri', String(args.targetTri));
+    if (args.skipThreshold != null) extra.push('--skip-threshold', String(args.skipThreshold));
     const res = spawnSync(process.execPath, [VERIFY, args.input, args.output, '--target-ratio', String(args.targetRatio), ...extra], { encoding: 'utf-8', timeout: 600000 });
     let report = null;
     try {
@@ -95,11 +99,11 @@ const tempOutput = !args.output;
 const output = args.output || path.join(os.tmpdir(), `pmx-reduce-face-realcheck-${Date.now()}.pmx`);
 
 console.error(`[real-model-check] input: ${args.input}`);
-console.error(`[real-model-check] output: ${output} (target-ratio=${args.targetRatio}${args.targetTri != null ? `, target-tri=${args.targetTri}` : ''})`);
+console.error(`[real-model-check] output: ${output} (target-ratio=${args.targetRatio}${args.targetTri != null ? `, target-tri=${args.targetTri}` : ''}${args.skipThreshold != null ? `, skip-threshold=${args.skipThreshold}` : ''})`);
 
-const reduce = runReduce({ input: args.input, output, targetRatio: args.targetRatio, targetTri: args.targetTri });
+const reduce = runReduce({ input: args.input, output, targetRatio: args.targetRatio, targetTri: args.targetTri, skipThreshold: args.skipThreshold });
 const verify = reduce.exit === 0
-    ? runVerify({ input: args.input, output, targetRatio: args.targetRatio, targetTri: args.targetTri })
+    ? runVerify({ input: args.input, output, targetRatio: args.targetRatio, targetTri: args.targetTri, skipThreshold: args.skipThreshold })
     : { exit: -1, report: { ok: false, error: 'reduce failed, verify skipped' } };
 
 if (!args.keep && fs.existsSync(output)) {
@@ -147,6 +151,7 @@ const report = {
     output,
     targetRatio: args.targetRatio,
     targetTri: args.targetTri,
+    skipThreshold: args.skipThreshold,
     keepOutput: !!args.output || args.keep,
     skipQuality: args.skipQuality,
     reduce: {

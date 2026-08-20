@@ -535,10 +535,16 @@ export function verifyFaces({
             quality.oversize = { inputMaxLP99: inMaxLP99Global, newCount: oversizeCount, curvedNewCount: curvedCount, matchTol: OVERSIZE_MATCH_TOL, curvMinDeg: OVERSIZE_CURVED_DEG };
             checks.noNewOversizeTriangles = curvedCount === 0;
 
-            // 非流形边（输出边共享 >2）
-            const nonManifold = countNonManifoldEdges(decTri);
-            quality.nonManifoldEdges = nonManifold;
-            checks.noNonManifoldEdges = nonManifold === 0;
+            // 非流形边（输出边共享 >2）：只断言「新增」非流形边（QEM 不得引入）。
+            // 源模型自带非流形边（如 TDA Utage CORAL COAST 源资产 2 条）不在 QEM 职责内，
+            // roundtrip（ratio 1.0）与各减面档都会保留它们，绝对值断言会把源缺陷误报为减面回归。
+            const inNonManifold = countNonManifoldEdges(origTri);
+            const outNonManifold = countNonManifoldEdges(decTri);
+            const newNonManifold = Math.max(0, outNonManifold - inNonManifold);
+            quality.nonManifoldEdges = outNonManifold;
+            quality.inputNonManifoldEdges = inNonManifold;
+            quality.newNonManifoldEdges = newNonManifold;
+            checks.noNonManifoldEdges = newNonManifold === 0;
 
             // 空间无新增洞（fix10 全局严格断言，任何模型都执行，不依赖 BurumaSet）：
             // 只断言「新增闭合洞环」（输出新增边界边组成深湾、输入原表面覆盖的真洞），把
