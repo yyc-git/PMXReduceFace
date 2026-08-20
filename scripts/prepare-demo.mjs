@@ -9,6 +9,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
+import { loadPmx } from '../src/tool/lib/pmx-loader.mjs';
+import { triangulateFaces } from '../src/tool/pmx-face-reduce/qem.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -16,9 +18,8 @@ const REDUCE = path.join(ROOT, 'src/tool/pmx-face-reduce/reduce.mjs');
 const ASSETS = path.join(ROOT, 'demo/assets');
 const STATS_JSON = path.join(ASSETS, 'stats.json');
 
-// 跳过阈值（demo 用 1 万面）：totalTri ≤ targetTri 且 ≤ skipThreshold 才跳过 QEM 透传输入。
-// 默认 50000 保持（reduce.mjs 内），demo 的 LOD 生成显式传 10000，让 1 万~5 万面的小模型也走 QEM。
-const SKIP_THRESHOLD = 10000;
+// 跳过阈值（≤5 万面不减面，质量优先）
+const SKIP_THRESHOLD = 50000;
 
 // 全部 LOD 档位统一加 --quality-first：minRetention 抬到 0.5、targetRatio 抬到 max(ratio, 0.7)，
 // 减面率上限 30%，避免 LOD55/50 过度削面破坏质量（显式 --target-ratio 仍可覆盖，见 reduce.mjs）。
@@ -67,6 +68,31 @@ function runReduce(model, lod) {
     const inputPath = path.join(ASSETS, model.baseDir, model.fileName);
     const outFile = lodOutFile(model, lod);
     const outputPath = path.join(ASSETS, model.baseDir, outFile);
+
+    // ≤5 万面一律不减面（质量优先），直接复制输入
+    const inputModel = loadPmx(inputPath, false);
+    const inputTri = triangulateFaces(inputModel.faces).length;
+    if (inputTri <= SKIP_THRESHOLD) {
+        fs.copyFileSync(inputPath, outputPath);
+        return {
+            outFile, outputPath,
+            stats: {
+                input: inputPath, output: outputPath,
+                originalVertices: inputModel.metadata.vertexCount,
+                newVertices: inputModel.metadata.vertexCount,
+                originalTriangles: inputTri, newTriangles: inputTri,
+                targetTriangles: inputTri, skipThreshold: SKIP_THRESHOLD,
+                skipped: true, qualityFirst: true,
+                lockedCount: 0, reductionRatio: 0, durationMs: 0,
+                mat: inputModel.materials.length,
+                perMaterial: inputModel.materials.map((m, i) => ({
+                    index: i, name: m.name || `mat${i}`,
+                    origTri: m.faceCount, newTri: m.faceCount,
+                })),
+            },
+        };
+    }
+
     const args = [
         '--input', inputPath,
         '--output', outputPath,

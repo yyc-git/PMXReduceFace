@@ -101,9 +101,8 @@ export function reduceFaces(rawOpts = {}) {
           }))
         : [];
 
-    // 跳过 QEM 的判定 = 目标已达成(totalTri ≤ targetTri,含默认 50000)且 totalTri ≤ skipThreshold(跳过阈值,
-    // 默认 50000,demo 传 10000)→ 直接透传输入文件(字节级一致)，
-    // stats 如实标记 skipped/lockedCount；不调 collapseMesh，不影响 qem.mjs 质量 reject 逻辑。
+    // 跳过 QEM 的判定 = totalTri ≤ targetTri 且 totalTri ≤ skipThreshold
+    // skipThreshold 默认 50000；demo 传 50000（≤5 万面不减面）。
     if (totalTri <= targetTri && totalTri <= skipThreshold) {
         fs.copyFileSync(input, output);
         return {
