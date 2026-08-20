@@ -34,7 +34,7 @@ function parseArgs(argv) {
         }
         else if (a === '--min-retention') args.minRetention = parseFloat(argv[++i]);
         else if (a === '--lock-small-materials') args.lockSmallMaterials = argv[++i] !== 'false';
-        else if (a === '--skip-threshold') args.skipThreshold = parseInt(String(argv[++i]).replace(/,/g, ''), 10);
+        else if (a === '--skip-threshold') { args.skipThreshold = parseInt(String(argv[++i]).replace(/,/g, ''), 10); args.skipThresholdGiven = true; }
         else if (a === '--quality-first') args.qualityFirst = true;
     }
     // 只给了 --target-ratio（未给 --target-tri）→ 比例模式：显式置 targetTriangles=null，
@@ -72,6 +72,8 @@ export function reduceFaces(rawOpts = {}) {
         minRetention = 0.3,
         lockSmallMaterials = true,
         skipThreshold = 50000,
+        skipThresholdGiven = false,
+        targetTriGiven = false,
         qualityFirst = false,
     } = opts;
     const t0 = Date.now();
@@ -101,9 +103,13 @@ export function reduceFaces(rawOpts = {}) {
           }))
         : [];
 
-    // 跳过 QEM 的判定 = totalTri ≤ targetTri 且 totalTri ≤ skipThreshold
-    // skipThreshold 默认 50000；demo 传 50000（≤5 万面不减面）。
-    if (totalTri <= targetTri && totalTri <= skipThreshold) {
+    // 跳过 QEM 的判定：
+    // - 显式传 --skip-threshold → totalTri ≤ skipThreshold 即跳过（质量优先，≤5万面不减）
+    // - 未传 --skip-threshold → 原始条件 totalTri ≤ targetTri 且 totalTri ≤ skipThreshold
+    const skipCond = skipThresholdGiven
+        ? totalTri <= skipThreshold
+        : (totalTri <= targetTri && totalTri <= skipThreshold);
+    if (skipCond) {
         fs.copyFileSync(input, output);
         return {
             input,

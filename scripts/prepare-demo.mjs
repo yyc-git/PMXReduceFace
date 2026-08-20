@@ -81,7 +81,7 @@ function runReduce(model, lod) {
                 originalVertices: inputModel.metadata.vertexCount,
                 newVertices: inputModel.metadata.vertexCount,
                 originalTriangles: inputTri, newTriangles: inputTri,
-                targetTriangles: inputTri, skipThreshold: SKIP_THRESHOLD,
+                targetTriangles: targetTriangles,
                 skipped: true, qualityFirst: true,
                 lockedCount: 0, reductionRatio: 0, durationMs: 0,
                 mat: inputModel.materials.length,
