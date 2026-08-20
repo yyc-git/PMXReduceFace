@@ -1,0 +1,44 @@
+{
+  "description": "XiaHui LOD_70 期望 verify 输出：无新增洞",
+  "model": "TDA Utage CORAL COAST (XiaHui)",
+  "targetRatio": 0.7,
+  "expectedChecks": {
+    "parseable": true,
+    "vertexReduced": true,
+    "triWithinTarget": false,
+    "lockedVertsPreserved": true,
+    "morphIndicesValid": true,
+    "morphMappingCorrect": true,
+    "morphApplyCorrect": true,
+    "noDegenerateTriangles": true,
+    "noDuplicateTriangles": true,
+    "everyNonLockedVertexUsed": true,
+    "weightsNormalized": true,
+    "normalsUnitLength": true,
+    "materialSumConsistent": true,
+    "headerConsistent": true,
+    "materialRetentionOk": true,
+    "noNewOversizeTriangles": true,
+    "noNonManifoldEdges": true,
+    "noNewHoles": true,
+    "qualityChecksActive": false
+  },
+  "expectedQuality": {
+    "holeRings": [],
+    "oversize": {
+      "newCount": "any",
+      "curvedNewCount": 0
+    },
+    "newNonManifoldEdges": 0
+  },
+  "expectedStats": {
+    "newHoleEdges": 0,
+    "patchedHoles": 0,
+    "patchedTriangles": 0
+  },
+  "note": "triWithinTarget=false 是预期行为（质量守卫抬高地板的代价，见 fix6-plan §5），不参与 ok 判定。qualityChecksActive=false 是因为 TDA 模型无 BurumaSet 材质（fix9 全局检查仍执行）。",
+  "actualMeasured": {
+    "newHoleEdges": 1,
+    "note": "Phase B Step 2 实测 newHoleEdges=1（修复前 >0），方案 A 生效但 fix 未完全消除洞（预期 0），显著下降。锁定顶点 23116 过多导致 errorCount=34216>target 24698 为既有行为，非本次回归。spec 期望仍保留 newHoleEdges=0 为理想目标，此字段记录实际测量值。"
+  }
+}
